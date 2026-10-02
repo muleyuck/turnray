@@ -45,13 +45,20 @@ fn priority_submenu(rows: &[PriorityRow], actions: &mut HashMap<MenuId, MenuActi
     submenu
 }
 
+/// muda strips a lone `&` from item text as a mnemonic marker; `&&` renders as one `&`.
+fn escape_mnemonic(text: &str) -> String {
+    text.replace('&', "&&")
+}
+
 /// The agent lines are display-only: nothing in them is clickable.
 pub fn build_menu(model: &[MenuEntry]) -> (Menu, HashMap<MenuId, MenuAction>) {
     let menu = Menu::new();
     let mut actions = HashMap::new();
     for entry in model {
         match entry {
-            MenuEntry::Disabled(text) => menu.append(&MenuItem::new(text, false, None)),
+            MenuEntry::Disabled(text) => {
+                menu.append(&MenuItem::new(escape_mnemonic(text), false, None))
+            }
             MenuEntry::Separator => menu.append(&PredefinedMenuItem::separator()),
             MenuEntry::Style(current) => menu.append(&style_submenu(*current, &mut actions)),
             MenuEntry::Priority(rows) => menu.append(&priority_submenu(rows, &mut actions)),
@@ -128,10 +135,12 @@ impl App {
         }
         self.last_view = Some(TrayView {
             // Keep the last image actually drawn, so a later visible view compares to it.
+            // Before anything is drawn, an empty Full stands in: no visible view carries it,
+            // so the first visible view always sets its icon.
             image: if view.visible {
                 view.image.clone()
             } else {
-                last.map_or(TrayImage::Error, |l| l.image.clone())
+                last.map_or(TrayImage::Full(Vec::new()), |l| l.image.clone())
             },
             ..view
         });
@@ -158,7 +167,12 @@ impl App {
     pub fn on_action(&mut self, action: MenuAction) -> bool {
         match action {
             MenuAction::Quit => return true,
-            MenuAction::SetStyle(style) => self.settings.style = style,
+            MenuAction::SetStyle(style) => {
+                self.settings.style = style;
+                // macOS flips a check item's mark on click, so re-picking the current style
+                // unchecks it while the model stays equal; force a rebuild to restore it.
+                self.last_model = None;
+            }
             MenuAction::MoveUp(status) => self.settings.priority.move_up(status),
             MenuAction::MoveDown(status) => self.settings.priority.move_down(status),
         }
@@ -179,5 +193,10 @@ mod tests {
             "herdr not found — install herdr and start it"
         );
         assert_eq!(error_line(&SourceError::Failed("boom".into())), "boom");
+    }
+
+    #[test]
+    fn an_ampersand_in_a_line_survives_mnemonic_stripping() {
+        assert_eq!(escape_mnemonic("R&D · a && b"), "R&&D · a &&&& b");
     }
 }

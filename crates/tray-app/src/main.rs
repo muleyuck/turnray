@@ -45,7 +45,7 @@ fn main() {
         let _ = menu_proxy.send_event(UserEvent::Menu(e));
     }));
 
-    let source: Arc<dyn DataSource> = Arc::new(herdr::HerdrSource);
+    let source: Arc<dyn DataSource> = Arc::new(herdr::HerdrSource::default());
     let mut app = App::new(store::load(), source.emitted_statuses());
     spawn_backend(source, event_loop.create_proxy());
 

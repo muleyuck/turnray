@@ -1,7 +1,10 @@
 //! The herdr data source: runs `herdr agent list` / `herdr workspace list`. herdr answers
 //! these over its socket, so they work from outside herdr with no `HERDR_*` variables.
 
+use std::io::Read;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 use agent_core::{herdr, Agent, DataSource, SourceError, Status};
@@ -18,6 +21,14 @@ const KNOWN_PATHS: &[&str] = &[
 /// The poll runs every second, so a miss must not spawn a login shell each time; still
 /// short enough that an install takes effect while the app runs.
 const SHELL_MISS_TTL: Duration = Duration::from_secs(600);
+
+/// A hung herdr socket or a shell startup file waiting for input would otherwise stall
+/// the poll for good, leaving the last statuses on show as if they were current.
+const HERDR_TIMEOUT: Duration = Duration::from_secs(5);
+const SHELL_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How long to wait for the drain threads once the child has exited.
+const EXIT_GRACE: Duration = Duration::from_millis(200);
 
 type ShellCache = std::sync::Mutex<Option<(Option<PathBuf>, Instant)>>;
 
@@ -37,22 +48,119 @@ fn candidates() -> Vec<PathBuf> {
     paths
 }
 
+/// `Command::output` with a deadline: past it the child's whole process group is killed
+/// and `TimedOut` returned. Its pipes are drained on their own threads so a chatty child
+/// can't block on a full pipe.
+fn output_with_timeout(cmd: &mut Command, timeout: Duration) -> std::io::Result<Output> {
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        // Its own group, so a timeout also takes down whatever it started (a login shell's
+        // startup files, say) instead of leaving it behind.
+        .process_group(0)
+        .spawn()?;
+    let stdout = Drain::spawn(child.stdout.take());
+    let stderr = Drain::spawn(child.stderr.take());
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {}
+            Err(e) => {
+                kill_group(child.id());
+                let _ = child.wait();
+                return Err(e);
+            }
+        }
+        if Instant::now() >= deadline {
+            kill_group(child.id());
+            let _ = child.wait();
+            return Err(std::io::ErrorKind::TimedOut.into());
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    // The child has exited, so its output is already in the pipe. Something it left running
+    // in the background may hold the pipe open past that, so the wait for the end of the
+    // pipe is short and what was read by then is the answer.
+    let until = Instant::now() + EXIT_GRACE;
+    Ok(Output {
+        status,
+        stdout: stdout.collect(until),
+        stderr: stderr.collect(until),
+    })
+}
+
+/// Reads a pipe to its end on a thread, keeping what it has read so far reachable.
+struct Drain {
+    buf: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+    done: std::sync::mpsc::Receiver<()>,
+}
+
+impl Drain {
+    fn spawn(pipe: Option<impl Read + Send + 'static>) -> Drain {
+        let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (tx, done) = std::sync::mpsc::channel();
+        let shared = std::sync::Arc::clone(&buf);
+        std::thread::spawn(move || {
+            if let Some(mut pipe) = pipe {
+                let mut chunk = [0; 4096];
+                while let Ok(n @ 1..) = pipe.read(&mut chunk) {
+                    shared
+                        .lock()
+                        .expect("drain buffer")
+                        .extend_from_slice(&chunk[..n]);
+                }
+            }
+            let _ = tx.send(());
+        });
+        Drain { buf, done }
+    }
+
+    /// Waits until `until` at most for the end of the pipe, then returns what has arrived.
+    fn collect(self, until: Instant) -> Vec<u8> {
+        let _ = self
+            .done
+            .recv_timeout(until.saturating_duration_since(Instant::now()));
+        std::mem::take(&mut *self.buf.lock().expect("drain buffer"))
+    }
+}
+
+/// std can only signal the child itself, so the group goes through kill(1).
+fn kill_group(pgid: u32) {
+    let _ = Command::new("/bin/kill")
+        .args(["-KILL", "--", &format!("-{pgid}")])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
 fn resolve_from(candidates: &[PathBuf], exists: impl Fn(&Path) -> bool) -> Option<PathBuf> {
     candidates.iter().find(|p| exists(p.as_path())).cloned()
 }
 
 /// `command -v` because zsh's `which` is a builtin that varies by setup.
 fn resolve_via_login_shell() -> Option<PathBuf> {
-    let out = std::process::Command::new("/bin/zsh")
-        .arg("-lc")
-        .arg("command -v herdr")
-        .output()
-        .ok()?;
+    let out = output_with_timeout(
+        Command::new("/bin/zsh").arg("-lc").arg("command -v herdr"),
+        SHELL_TIMEOUT,
+    )
+    .ok()?;
     if !out.status.success() {
         return None;
     }
-    let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    (!path.is_empty()).then(|| PathBuf::from(path))
+    path_from_shell_output(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// Login-shell startup and logout files may print to stdout too, so the answer is the last
+/// line that is an absolute path to a `herdr`. An alias or function answers with neither.
+fn path_from_shell_output(stdout: &str) -> Option<PathBuf> {
+    stdout
+        .lines()
+        .map(str::trim)
+        .map(Path::new)
+        .rfind(|p| p.is_absolute() && p.file_name() == Some("herdr".as_ref()))
+        .map(Path::to_path_buf)
 }
 
 /// Filesystem, shell and clock are injected so a test can drive the caching.
@@ -110,8 +218,14 @@ fn classify(status_code: i32, stdout: &str, stderr: &str) -> Result<String, Sour
 
 /// Blocking: it starts a process.
 fn run(path: &Path, args: &[&str]) -> Result<String, SourceError> {
-    let out = match std::process::Command::new(path).args(args).output() {
+    let out = match output_with_timeout(Command::new(path).args(args), HERDR_TIMEOUT) {
         Ok(out) => out,
+        Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
+            return Err(SourceError::Failed(format!(
+                "herdr did not answer within {}s",
+                HERDR_TIMEOUT.as_secs()
+            )));
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             invalidate();
             return Err(not_found());
@@ -125,7 +239,11 @@ fn run(path: &Path, args: &[&str]) -> Result<String, SourceError> {
     )
 }
 
-pub struct HerdrSource;
+#[derive(Default)]
+pub struct HerdrSource {
+    /// The last label failure logged, so a persistent one isn't logged every poll.
+    last_label_error: std::sync::Mutex<Option<String>>,
+}
 
 impl DataSource for HerdrSource {
     fn fetch(&self) -> Result<Vec<Agent>, SourceError> {
@@ -135,9 +253,17 @@ impl DataSource for HerdrSource {
         let labels = match run(&path, &["workspace", "list"])
             .and_then(|json| herdr::parse_workspaces(&json).map_err(SourceError::Failed))
         {
-            Ok(labels) => labels,
+            Ok(labels) => {
+                *self.last_label_error.lock().expect("label error") = None;
+                labels
+            }
             Err(e) => {
-                tracing::warn!("workspace labels unavailable: {e:?}");
+                let msg = format!("{e:?}");
+                let mut last = self.last_label_error.lock().expect("label error");
+                if last.as_deref() != Some(msg.as_str()) {
+                    tracing::warn!("workspace labels unavailable: {msg}");
+                    *last = Some(msg);
+                }
                 Default::default()
             }
         };
@@ -153,6 +279,97 @@ impl DataSource for HerdrSource {
 mod tests {
     use super::*;
     use std::cell::{Cell, RefCell};
+
+    #[test]
+    fn a_child_that_finishes_in_time_yields_its_output() {
+        let out = output_with_timeout(
+            Command::new("/bin/sh").args(["-c", "echo out; echo err >&2; exit 3"]),
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        assert_eq!(out.status.code(), Some(3));
+        assert_eq!(out.stdout, b"out\n");
+        assert_eq!(out.stderr, b"err\n");
+    }
+
+    #[test]
+    fn a_child_past_the_deadline_is_killed_and_reported() {
+        let started = Instant::now();
+        let err = output_with_timeout(
+            Command::new("/bin/sleep").arg("10"),
+            Duration::from_millis(100),
+        )
+        .unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "must not wait for the child"
+        );
+    }
+
+    #[test]
+    fn a_background_process_holding_the_pipe_does_not_cost_the_output() {
+        // e.g. a ~/.zprofile that starts a job: the answer is written before the shell
+        // exits and must not be thrown away for the job still holding stdout.
+        let started = Instant::now();
+        let out = output_with_timeout(
+            Command::new("/bin/sh").args(["-c", "echo /opt/x/herdr; sleep 10 & exit 0"]),
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        assert!(out.status.success());
+        assert_eq!(out.stdout, b"/opt/x/herdr\n");
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn a_timeout_also_kills_what_the_child_started() {
+        let pid_file = std::env::temp_dir().join(format!("turnray-test-{}", std::process::id()));
+        let script = format!("sleep 30 & echo $! > {}; wait", pid_file.display());
+        let err = output_with_timeout(
+            Command::new("/bin/sh").args(["-c", &script]),
+            Duration::from_millis(300),
+        )
+        .unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+        let pid = std::fs::read_to_string(&pid_file).unwrap();
+        let _ = std::fs::remove_file(&pid_file);
+        let alive = || {
+            Command::new("/bin/kill")
+                .args(["-0", pid.trim()])
+                .stderr(Stdio::null())
+                .status()
+                .unwrap()
+                .success()
+        };
+        let gone_by = Instant::now() + Duration::from_secs(2);
+        while alive() && Instant::now() < gone_by {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!alive(), "the background sleep outlived the timeout");
+    }
+
+    #[test]
+    fn the_shell_answer_is_the_last_absolute_path_to_a_herdr() {
+        assert_eq!(
+            path_from_shell_output("Welcome /etc/motd\n/opt/x/herdr\n\n"),
+            Some(PathBuf::from("/opt/x/herdr"))
+        );
+        // Startup or logout files may print after it, paths included.
+        assert_eq!(
+            path_from_shell_output("/opt/x/herdr\n/usr/local/share/bye\nbye\n"),
+            Some(PathBuf::from("/opt/x/herdr"))
+        );
+        // An alias or function answers with something that is not a path to herdr.
+        assert_eq!(
+            path_from_shell_output("/usr/local/share/banner\nalias herdr='h'\n"),
+            None
+        );
+    }
 
     #[test]
     fn a_zero_exit_yields_stdout() {
