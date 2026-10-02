@@ -9,7 +9,7 @@ pub enum SourceError {
 }
 
 /// Where agents come from. Blocking: an implementation may start processes or read files.
-pub trait DataSource: Send {
+pub trait DataSource: Send + Sync {
     fn fetch(&self) -> Result<Vec<Agent>, SourceError>;
 
     /// The statuses this source can ever produce. The settings still list all five; the
