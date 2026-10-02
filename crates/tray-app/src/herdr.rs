@@ -247,10 +247,20 @@ pub struct HerdrSource {
 
 impl DataSource for HerdrSource {
     fn fetch(&self) -> Result<Vec<Agent>, SourceError> {
-        let path = resolve().ok_or_else(not_found)?;
-        let agents = run(&path, &["agent", "list"])?;
+        self.fetch_from(&resolve().ok_or_else(not_found)?)
+    }
+
+    fn emitted_statuses(&self) -> &'static [Status] {
+        herdr::EMITTED
+    }
+}
+
+impl HerdrSource {
+    /// `fetch` with the executable already resolved, so a test can point it at a fake.
+    fn fetch_from(&self, path: &Path) -> Result<Vec<Agent>, SourceError> {
+        let agents = run(path, &["agent", "list"])?;
         // Labels only decorate the list; without them each line shows the workspace id.
-        let labels = match run(&path, &["workspace", "list"])
+        let labels = match run(path, &["workspace", "list"])
             .and_then(|json| herdr::parse_workspaces(&json).map_err(SourceError::Failed))
         {
             Ok(labels) => {
@@ -269,15 +279,138 @@ impl DataSource for HerdrSource {
         };
         herdr::parse_agents(&agents, &labels).map_err(SourceError::Failed)
     }
-
-    fn emitted_statuses(&self) -> &'static [Status] {
-        herdr::EMITTED
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- fetch against a fake herdr ---
+
+    /// An executable shell script standing in for herdr. It answers only the exact
+    /// subcommands given, so a wrong argument fails the test instead of passing silently.
+    struct FakeHerdr {
+        dir: PathBuf,
+    }
+
+    impl FakeHerdr {
+        fn new(name: &str, agent_list: &str, workspace_list: &str) -> FakeHerdr {
+            use std::os::unix::fs::PermissionsExt;
+            let dir = std::env::temp_dir()
+                .join(format!("turnray-fake-herdr-{}-{name}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let script = format!(
+                "#!/bin/sh\ncase \"$*\" in\n\"agent list\")\n{agent_list}\n;;\n\"workspace list\")\n{workspace_list}\n;;\n*) echo \"unexpected args: $*\" >&2; exit 64 ;;\nesac\n"
+            );
+            let path = dir.join("herdr");
+            std::fs::write(&path, script).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            FakeHerdr { dir }
+        }
+
+        fn path(&self) -> PathBuf {
+            self.dir.join("herdr")
+        }
+    }
+
+    impl Drop for FakeHerdr {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    /// A shell command printing `json`, quoted for the fake's case arms.
+    fn prints(json: &str) -> String {
+        format!("cat <<'EOF'\n{json}\nEOF")
+    }
+
+    const AGENT_LIST: &str = r#"{"id":"cli:agent:list","result":{"agents":[
+        {"agent":"claude","agent_status":"blocked","focused":false,"pane_id":"w1:p1",
+         "terminal_title_stripped":"Fix & ship","workspace_id":"w1"},
+        {"agent":"codex","agent_status":"working","focused":true,"pane_id":"w2:p1",
+         "terminal_title_stripped":"Refactor","workspace_id":"w2"},
+        {"agent":"claude","agent_status":"idle","pane_id":"","workspace_id":"w1"}
+        ],"type":"agent_list"}}"#;
+    const WORKSPACE_LIST: &str = r#"{"id":"cli:workspace:list","result":{"type":"workspace_list","workspaces":[
+        {"label":"turnray","workspace_id":"w1"},{"label":"scoptray","workspace_id":"w2"}]}}"#;
+
+    #[test]
+    fn fetch_runs_both_subcommands_and_joins_the_workspace_labels() {
+        let fake = FakeHerdr::new("ok", &prints(AGENT_LIST), &prints(WORKSPACE_LIST));
+        let agents = HerdrSource::default().fetch_from(&fake.path()).unwrap();
+        assert_eq!(
+            agents,
+            vec![
+                Agent {
+                    status: Status::Blocked,
+                    name: "claude".into(),
+                    workspace: "turnray".into(),
+                    title: "Fix & ship".into(),
+                    focused: false,
+                },
+                Agent {
+                    status: Status::Working,
+                    name: "codex".into(),
+                    workspace: "scoptray".into(),
+                    title: "Refactor".into(),
+                    focused: true,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_failing_agent_list_is_reported_with_herdrs_reason() {
+        let fake = FakeHerdr::new(
+            "agent-fails",
+            "echo 'Error: server not running' >&2; exit 1",
+            &prints(WORKSPACE_LIST),
+        );
+        assert_eq!(
+            HerdrSource::default().fetch_from(&fake.path()),
+            Err(SourceError::Failed(
+                "herdr not reachable: Error: server not running".into()
+            ))
+        );
+    }
+
+    #[test]
+    fn a_failing_workspace_list_falls_back_to_workspace_ids() {
+        let fake = FakeHerdr::new(
+            "workspace-fails",
+            &prints(AGENT_LIST),
+            "echo 'Error: boom' >&2; exit 1",
+        );
+        let agents = HerdrSource::default().fetch_from(&fake.path()).unwrap();
+        let workspaces: Vec<&str> = agents.iter().map(|a| a.workspace.as_str()).collect();
+        assert_eq!(workspaces, ["w1", "w2"]);
+    }
+
+    #[test]
+    fn an_agent_list_that_is_not_json_is_a_failure() {
+        let fake = FakeHerdr::new(
+            "not-json",
+            "echo 'herdr 9.9 — usage: ...'",
+            &prints(WORKSPACE_LIST),
+        );
+        let Err(SourceError::Failed(msg)) = HerdrSource::default().fetch_from(&fake.path()) else {
+            panic!("expected a failure");
+        };
+        assert!(msg.starts_with("unreadable agent list"), "{msg}");
+    }
+
+    #[test]
+    fn a_herdr_that_vanished_is_not_found() {
+        let fake = FakeHerdr::new("vanished", "", "");
+        let path = fake.path();
+        drop(fake);
+        assert!(matches!(
+            HerdrSource::default().fetch_from(&path),
+            Err(SourceError::NotFound(_))
+        ));
+    }
+
+    // --- process handling ---
     use std::cell::{Cell, RefCell};
 
     #[test]
