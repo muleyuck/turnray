@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 22 22" width="22" height="22">
+  <title>error</title>
+  <!-- A warning triangle with a bang punched out: herdr couldn't be read. A triangle,
+       not a disc, so it can't be mistaken for unknown. -->
+  <defs>
+    <mask id="bang">
+      <rect width="22" height="22" fill="white"/>
+      <path d="M11 8.2V13" stroke="black" stroke-width="2.2" stroke-linecap="round"/>
+      <circle cx="11" cy="16.4" r="1.3" fill="black"/>
+    </mask>
+  </defs>
+  <path d="M9.3 2.8C10.1 1.5 11.9 1.5 12.7 2.8L20.6 16.8C21.4 18.2 20.4 19.9 18.8 19.9H3.2C1.6 19.9 0.6 18.2 1.4 16.8Z" fill="currentColor" mask="url(#bang)"/>
+</svg>

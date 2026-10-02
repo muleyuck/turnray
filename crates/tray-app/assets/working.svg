@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 22 22" width="22" height="22">
+  <title>working</title>
+  <!-- An hourglass: busy, nothing for you to do yet. -->
+  <g fill="currentColor">
+    <rect x="4" y="1.5" width="14" height="2.4" rx="1.2"/>
+    <rect x="4" y="18.1" width="14" height="2.4" rx="1.2"/>
+  </g>
+  <path d="M6 3.9V6.2C6 8.4 9 9.8 9 11C9 12.2 6 13.6 6 15.8V18.1M16 3.9V6.2C16 8.4 13 9.8 13 11C13 12.2 16 13.6 16 15.8V18.1" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+  <path d="M8 7H14C13.4 8.4 11.8 9.4 11 10C10.2 9.4 8.6 8.4 8 7ZM11 14.6C12.6 15.2 14.4 16.2 14.6 18.1H7.4C7.6 16.2 9.4 15.2 11 14.6Z" fill="currentColor"/>
+</svg>

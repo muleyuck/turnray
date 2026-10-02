@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 22 22" width="22" height="22">
+  <title>blocked</title>
+  <!-- A raised hand: someone waiting for you to answer. -->
+  <g fill="currentColor">
+    <rect x="5.2" y="4.2" width="2.6" height="9" rx="1.3"/>
+    <rect x="8.2" y="2" width="2.6" height="10" rx="1.3"/>
+    <rect x="11.2" y="2.6" width="2.6" height="10" rx="1.3"/>
+    <rect x="14.2" y="4.6" width="2.6" height="9" rx="1.3"/>
+    <rect x="1.6" y="10.6" width="2.6" height="7" rx="1.3" transform="rotate(-38 2.9 14.1)"/>
+    <path d="M5.2 10.5H16.8V14.5C16.8 18 14.4 20.5 11 20.5C8 20.5 6.6 19 5.2 16.8Z"/>
+  </g>
+</svg>

@@ -1,1 +1,3 @@
+mod images;
+
 fn main() {}

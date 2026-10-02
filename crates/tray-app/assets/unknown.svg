@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 22 22" width="22" height="22">
+  <title>unknown</title>
+  <!-- A question mark punched out of a disc: herdr itself can't tell. -->
+  <defs>
+    <mask id="q">
+      <rect width="22" height="22" fill="white"/>
+      <path d="M8.2 8.6C8.2 6.9 9.5 5.8 11 5.8C12.6 5.8 13.8 6.9 13.8 8.3C13.8 10.4 11 10.6 11 12.8" fill="none" stroke="black" stroke-width="2.2" stroke-linecap="round"/>
+      <circle cx="11" cy="16.2" r="1.4" fill="black"/>
+    </mask>
+  </defs>
+  <circle cx="11" cy="11" r="9.5" fill="currentColor" mask="url(#q)"/>
+</svg>
