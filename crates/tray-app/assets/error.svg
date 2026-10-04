@@ -1,13 +1,18 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 22 22" width="22" height="22">
   <title>error</title>
-  <!-- A warning triangle with a bang punched out: herdr couldn't be read. A triangle,
-       not a disc, so it can't be mistaken for unknown. -->
+  <!-- A warning triangle: herdr couldn't be read. The badge sits in front of a shrunken,
+       faded app mark (see standby.svg), with a gap cut around it so the two don't merge. -->
   <defs>
-    <mask id="bang">
+    <mask id="tile">
       <rect width="22" height="22" fill="white"/>
-      <path d="M11 8.2V13" stroke="black" stroke-width="2.2" stroke-linecap="round"/>
-      <circle cx="11" cy="16.4" r="1.3" fill="black"/>
+      <g transform="translate(1 1) scale(0.72) translate(-1 -1)"><g fill="#999"><rect x="4.4" y="4.6" width="7.6" height="2.6" rx="1.3"/><rect x="4.4" y="14.8" width="5.6" height="2.6" rx="1.3"/></g><path d="M5.7 11H12.6A2.9 2.9 0 0 0 15.5 8.1V5.9" fill="none" stroke="black" stroke-width="2.6" stroke-linecap="round"/></g>
+      <g transform="translate(14.4 14.4) scale(1.3333) translate(-16.6 -16.6)" fill="black" stroke="black" stroke-width="2.25" stroke-linejoin="round"><path d="M16.6 11L22 21.2H11.2Z"/></g>
+    </mask>
+    <mask id="mark">
+      <rect width="22" height="22" fill="white"/>
+      <g transform="translate(14.4 14.4) scale(1.3333) translate(-16.6 -16.6)" fill="none" stroke="black" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d='M16.6 14.6V17.2'/><circle cx='16.6' cy='19.2' r='0.95' fill="black" stroke="none"/></g>
     </mask>
   </defs>
-  <path d="M9.3 2.8C10.1 1.5 11.9 1.5 12.7 2.8L20.6 16.8C21.4 18.2 20.4 19.9 18.8 19.9H3.2C1.6 19.9 0.6 18.2 1.4 16.8Z" fill="currentColor" mask="url(#bang)"/>
+  <g mask="url(#tile)" opacity="0.62"><g transform="translate(1 1) scale(0.72) translate(-1 -1)"><rect x="1" y="1" width="20" height="20" rx="5" fill="currentColor"/></g></g>
+  <g mask="url(#mark)"><g transform="translate(14.4 14.4) scale(1.3333) translate(-16.6 -16.6)" fill="currentColor"><path d="M16.6 11L22 21.2H11.2Z"/></g></g>
 </svg>

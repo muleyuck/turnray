@@ -1,12 +1,19 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 22 22" width="22" height="22">
   <title>blocked</title>
-  <!-- A raised hand: someone waiting for you to answer. -->
-  <g fill="currentColor">
-    <rect x="5.2" y="4.2" width="2.6" height="9" rx="1.3"/>
-    <rect x="8.2" y="2" width="2.6" height="10" rx="1.3"/>
-    <rect x="11.2" y="2.6" width="2.6" height="10" rx="1.3"/>
-    <rect x="14.2" y="4.6" width="2.6" height="9" rx="1.3"/>
-    <rect x="1.6" y="10.6" width="2.6" height="7" rx="1.3" transform="rotate(-38 2.9 14.1)"/>
-    <path d="M5.2 10.5H16.8V14.5C16.8 18 14.4 20.5 11 20.5C8 20.5 6.6 19 5.2 16.8Z"/>
-  </g>
+  <!-- A speech bubble with a bang: the agent is waiting for your reply. The badge sits in
+       front of a shrunken, faded app mark (see standby.svg), with a gap cut around it so
+       the two don't merge. -->
+  <defs>
+    <mask id="tile">
+      <rect width="22" height="22" fill="white"/>
+      <g transform="translate(1 1) scale(0.72) translate(-1 -1)"><g fill="#999"><rect x="4.4" y="4.6" width="7.6" height="2.6" rx="1.3"/><rect x="4.4" y="14.8" width="5.6" height="2.6" rx="1.3"/></g><path d="M5.7 11H12.6A2.9 2.9 0 0 0 15.5 8.1V5.9" fill="none" stroke="black" stroke-width="2.6" stroke-linecap="round"/></g>
+      <g transform="translate(14.4 14.4) scale(1.3333) translate(-16.6 -16.6)" fill="black" stroke="black" stroke-width="2.25" stroke-linejoin="round"><path d="M13 11.6H20.2C21.2 11.6 22 12.4 22 13.4V18C22 19 21.2 19.8 20.2 19.8H18.4L15.6 22V19.8H13C12 19.8 11.2 19 11.2 18V13.4C11.2 12.4 12 11.6 13 11.6Z"/></g>
+    </mask>
+    <mask id="mark">
+      <rect width="22" height="22" fill="white"/>
+      <g transform="translate(14.4 14.4) scale(1.3333) translate(-16.6 -16.6)" fill="none" stroke="black" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d='M16.6 13.6V16'/><circle cx='16.6' cy='18' r='0.95' fill="black" stroke="none"/></g>
+    </mask>
+  </defs>
+  <g mask="url(#tile)" opacity="0.62"><g transform="translate(1 1) scale(0.72) translate(-1 -1)"><rect x="1" y="1" width="20" height="20" rx="5" fill="currentColor"/></g></g>
+  <g mask="url(#mark)"><g transform="translate(14.4 14.4) scale(1.3333) translate(-16.6 -16.6)" fill="currentColor"><path d="M13 11.6H20.2C21.2 11.6 22 12.4 22 13.4V18C22 19 21.2 19.8 20.2 19.8H18.4L15.6 22V19.8H13C12 19.8 11.2 19 11.2 18V13.4C11.2 12.4 12 11.6 13 11.6Z"/></g></g>
 </svg>

@@ -1,8 +1,18 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 22 22" width="22" height="22">
   <title>idle</title>
-  <!-- Zz: asleep, waiting for you to wake it. -->
-  <g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M2.5 9.5H10.5L2.5 19H10.5" stroke-width="2.6"/>
-    <path d="M13 3H19.5L13 10.5H19.5" stroke-width="2.2"/>
-  </g>
+  <!-- A clock: idle, waiting for its next turn. The badge sits in front of a shrunken,
+       faded app mark (see standby.svg), with a gap cut around it so the two don't merge. -->
+  <defs>
+    <mask id="tile">
+      <rect width="22" height="22" fill="white"/>
+      <g transform="translate(1 1) scale(0.72) translate(-1 -1)"><g fill="#999"><rect x="4.4" y="4.6" width="7.6" height="2.6" rx="1.3"/><rect x="4.4" y="14.8" width="5.6" height="2.6" rx="1.3"/></g><path d="M5.7 11H12.6A2.9 2.9 0 0 0 15.5 8.1V5.9" fill="none" stroke="black" stroke-width="2.6" stroke-linecap="round"/></g>
+      <g transform="translate(14.4 14.4) scale(1.3333) translate(-16.6 -16.6)" fill="black" stroke="black" stroke-width="2.25" stroke-linejoin="round"><circle cx="16.6" cy="16.6" r="5.4"/></g>
+    </mask>
+    <mask id="mark">
+      <rect width="22" height="22" fill="white"/>
+      <g transform="translate(14.4 14.4) scale(1.3333) translate(-16.6 -16.6)" fill="none" stroke="black" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx='16.6' cy='16.6' r='3.4' stroke-width='1.2'/><path d='M16.6 14.6V16.8L18 17.8' stroke-width='1.2'/></g>
+    </mask>
+  </defs>
+  <g mask="url(#tile)" opacity="0.62"><g transform="translate(1 1) scale(0.72) translate(-1 -1)"><rect x="1" y="1" width="20" height="20" rx="5" fill="currentColor"/></g></g>
+  <g mask="url(#mark)"><g transform="translate(14.4 14.4) scale(1.3333) translate(-16.6 -16.6)" fill="currentColor"><circle cx="16.6" cy="16.6" r="5.4"/></g></g>
 </svg>

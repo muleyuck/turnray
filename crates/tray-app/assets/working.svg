@@ -1,10 +1,19 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 22 22" width="22" height="22">
   <title>working</title>
-  <!-- An hourglass: busy, nothing for you to do yet. -->
-  <g fill="currentColor">
-    <rect x="4" y="1.5" width="14" height="2.4" rx="1.2"/>
-    <rect x="4" y="18.1" width="14" height="2.4" rx="1.2"/>
-  </g>
-  <path d="M6 3.9V6.2C6 8.4 9 9.8 9 11C9 12.2 6 13.6 6 15.8V18.1M16 3.9V6.2C16 8.4 13 9.8 13 11C13 12.2 16 13.6 16 15.8V18.1" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
-  <path d="M8 7H14C13.4 8.4 11.8 9.4 11 10C10.2 9.4 8.6 8.4 8 7ZM11 14.6C12.6 15.2 14.4 16.2 14.6 18.1H7.4C7.6 16.2 9.4 15.2 11 14.6Z" fill="currentColor"/>
+  <!-- A sparkle: the agent is at work, nothing for you to do yet. The badge sits in front
+       of a shrunken, faded app mark (see standby.svg), with a gap cut around it so the two
+       don't merge. -->
+  <defs>
+    <mask id="tile">
+      <rect width="22" height="22" fill="white"/>
+      <g transform="translate(1 1) scale(0.72) translate(-1 -1)"><g fill="#999"><rect x="4.4" y="4.6" width="7.6" height="2.6" rx="1.3"/><rect x="4.4" y="14.8" width="5.6" height="2.6" rx="1.3"/></g><path d="M5.7 11H12.6A2.9 2.9 0 0 0 15.5 8.1V5.9" fill="none" stroke="black" stroke-width="2.6" stroke-linecap="round"/></g>
+      <g transform="translate(14.4 14.4) scale(1.3333) translate(-16.6 -16.6)" fill="black" stroke="black" stroke-width="2.25" stroke-linejoin="round"><circle cx="16.6" cy="16.6" r="5.4"/></g>
+    </mask>
+    <mask id="mark">
+      <rect width="22" height="22" fill="white"/>
+      <g transform="translate(14.4 14.4) scale(1.3333) translate(-16.6 -16.6)" fill="none" stroke="black" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d='M16.6 12.9C16.9 15.4 17.8 16.3 20.3 16.6C17.8 16.9 16.9 17.8 16.6 20.3C16.3 17.8 15.4 16.9 12.9 16.6C15.4 16.3 16.3 15.4 16.6 12.9Z' fill='black' stroke='black' stroke-width='0.5'/></g>
+    </mask>
+  </defs>
+  <g mask="url(#tile)" opacity="0.62"><g transform="translate(1 1) scale(0.72) translate(-1 -1)"><rect x="1" y="1" width="20" height="20" rx="5" fill="currentColor"/></g></g>
+  <g mask="url(#mark)"><g transform="translate(14.4 14.4) scale(1.3333) translate(-16.6 -16.6)" fill="currentColor"><circle cx="16.6" cy="16.6" r="5.4"/></g></g>
 </svg>
