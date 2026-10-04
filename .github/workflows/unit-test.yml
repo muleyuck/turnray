@@ -1,0 +1,17 @@
+name: unit-test
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+permissions: {}
+jobs:
+  unit-test:
+    permissions:
+      contents: read
+    uses: muleyuck/github-actions/.github/workflows/ci-rust.yml@v1
+    with:
+      runs-on: macos-latest
+      test-command: make test && make app
