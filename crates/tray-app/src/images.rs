@@ -11,6 +11,7 @@ const DONE: &[u8] = include_bytes!("../assets/tray-done-36.png");
 const IDLE: &[u8] = include_bytes!("../assets/tray-idle-36.png");
 const WORKING: &[u8] = include_bytes!("../assets/tray-working-36.png");
 const UNKNOWN: &[u8] = include_bytes!("../assets/tray-unknown-36.png");
+const STANDBY: &[u8] = include_bytes!("../assets/tray-standby-36.png");
 const ERROR: &[u8] = include_bytes!("../assets/tray-error-36.png");
 const DIGITS: [&[u8]; 10] = [
     include_bytes!("../assets/tray-digit-0-36.png"),
@@ -65,6 +66,10 @@ pub fn status_icon(status: Status) -> Image {
         Status::Working => WORKING,
         Status::Unknown => UNKNOWN,
     })
+}
+
+pub fn standby_icon() -> Image {
+    decode(STANDBY)
 }
 
 pub fn error_icon() -> Image {
@@ -133,11 +138,11 @@ mod tests {
     }
 
     #[test]
-    fn every_status_icon_and_the_error_icon_decode_to_36px_rgba() {
+    fn every_status_icon_and_the_standby_and_error_icons_decode_to_36px_rgba() {
         let icons = Status::ALL
             .into_iter()
             .map(status_icon)
-            .chain([error_icon()]);
+            .chain([standby_icon(), error_icon()]);
         for img in icons {
             assert_eq!((img.width, img.height), (36, 36));
             assert_eq!(img.rgba.len() as u32, img.width * img.height * 4);

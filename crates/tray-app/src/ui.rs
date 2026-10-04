@@ -17,6 +17,8 @@ pub enum TrayImage {
     Status(Status),
     /// Full style: every status that has an agent, with its count drawn in
     Full(Vec<(Status, usize)>),
+    /// No agents: something stays on show so the menu can still be opened
+    Standby,
     Error,
 }
 
@@ -49,7 +51,11 @@ pub fn tray_view(state: &DisplayState, settings: &Settings) -> TrayView {
         DisplayState::Ok { agents } => {
             let counts = settings.priority.counts(agents);
             let Some(&(top, n)) = counts.first() else {
-                return TrayView::hidden();
+                return TrayView {
+                    visible: true,
+                    image: TrayImage::Standby,
+                    title: String::new(),
+                };
             };
             match settings.style {
                 Style::Simple => TrayView {
@@ -142,6 +148,9 @@ pub fn menu_model(state: &DisplayState, settings: &Settings, emitted: &[Status])
     let mut entries = Vec::new();
     match state {
         DisplayState::BeforeFirstFetch => {}
+        DisplayState::Ok { agents } if agents.is_empty() => {
+            entries.push(MenuEntry::Disabled("No agents".into()))
+        }
         DisplayState::Ok { agents } => push_agents(&mut entries, agents, settings),
         DisplayState::Error { line } => entries.push(MenuEntry::Disabled(line.clone())),
     }
@@ -252,9 +261,23 @@ mod tests {
     }
 
     #[test]
-    fn nothing_is_shown_without_agents_or_before_the_first_fetch() {
+    fn no_agents_shows_the_standby_icon_without_a_count() {
+        // Hiding the item would also hide the menu, leaving no way to quit.
         for style in [Style::Simple, Style::Full] {
-            assert!(!tray_view(&ok(vec![]), &settings(style)).visible);
+            assert_eq!(
+                tray_view(&ok(vec![]), &settings(style)),
+                TrayView {
+                    visible: true,
+                    image: TrayImage::Standby,
+                    title: String::new()
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn nothing_is_shown_before_the_first_fetch() {
+        for style in [Style::Simple, Style::Full] {
             assert!(!tray_view(&DisplayState::BeforeFirstFetch, &settings(style)).visible);
         }
     }
@@ -363,6 +386,13 @@ mod tests {
             &Status::ALL,
         );
         assert_eq!(model[0], MenuEntry::Disabled("herdr not found".into()));
+        assert_eq!(model[1], MenuEntry::Separator);
+    }
+
+    #[test]
+    fn no_agents_heads_the_menu_with_a_line_saying_so() {
+        let model = menu_model(&ok(vec![]), &settings(Style::Simple), &Status::ALL);
+        assert_eq!(model[0], MenuEntry::Disabled("No agents".into()));
         assert_eq!(model[1], MenuEntry::Separator);
     }
 

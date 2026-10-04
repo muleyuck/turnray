@@ -6,7 +6,7 @@ test:
 	cargo fmt --all --check
 
 ASSETS := crates/tray-app/assets
-STATUSES := blocked done idle working unknown error
+STATUSES := blocked done idle working unknown standby error
 DIGITS := 0 1 2 3 4 5 6 7 8 9
 
 # Rasterises $(ASSETS)/*.svg into the PNGs the app embeds. 36px tall because tray-icon

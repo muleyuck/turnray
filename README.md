@@ -17,7 +17,7 @@ changing your terminal layout. The name is *turn* (your turn) + *tray*.
   head of the list
 - Polls `herdr agent list` every second. If herdr can't be reached, a warning triangle is
   shown and the menu says why
-- With no agents, nothing is shown at all
+- With no agents, the app's mark alone is shown and the menu says "No agents"
 
 ## Requirements
 
@@ -35,11 +35,7 @@ cargo build --release
 
 ## Quitting
 
-Quit is in the menu. While there are no agents the item is hidden, so to quit then:
-
-```sh
-pkill -x tray-app
-```
+Quit is in the menu.
 
 ## Settings
 

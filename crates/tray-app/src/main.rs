@@ -21,6 +21,7 @@ pub fn tray_icon(image: &TrayImage) -> Icon {
     let img = match image {
         TrayImage::Status(status) => images::status_icon(*status),
         TrayImage::Full(counts) => images::full(counts),
+        TrayImage::Standby => images::standby_icon(),
         TrayImage::Error => images::error_icon(),
     };
     Icon::from_rgba(img.rgba, img.width, img.height).expect("tray icon")
@@ -54,7 +55,7 @@ fn main() {
         match event {
             Event::NewEvents(StartCause::Init) => {
                 // On macOS, the tray must be created after the event loop starts. It starts
-                // hidden: nothing is shown until there is an agent to show.
+                // hidden: nothing is shown until the first fetch says what to show.
                 let tray = TrayIconBuilder::new().build().expect("tray build");
                 tray.set_visible(false).expect("tray visibility");
                 app.tray = Some(tray);
