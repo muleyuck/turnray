@@ -12,7 +12,8 @@ See README.md for what it does from a user's side; this file is what you need to
 
 ```sh
 make test     # cargo check --all-targets / test / clippy / fmt --check — run before every commit
-make icons    # re-render crates/tray-app/assets/*.svg into the embedded PNGs
+make icons    # re-render the menu bar PNGs and AppIcon.icns from crates/tray-app/assets/*.svg
+make app      # universal, ad-hoc signed target/turnray.app + target/turnray-<version>.zip
 cargo test -p tray-app <name>   # one test, or every test whose name contains <name>
 RUST_LOG=debug ./target/release/turnray   # logs go to stderr
 ```
@@ -45,7 +46,8 @@ A Cargo workspace with two crates:
   it to the menu bar's text colour. Draw with `currentColor`; any other colour is lost,
   and partial alpha shows as a lighter shade
 - Each image is 36px tall (18pt at 2x). Status SVGs use a 22×22 viewBox; digits 14×36
-- `app-icon.svg` is the app icon and is not used by the build yet
+- `app-icon.svg` is the app icon: `make icons` turns it into the committed `AppIcon.icns`,
+  which `make app` puts in the bundle
 
 ## Tests
 
