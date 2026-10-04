@@ -31,7 +31,7 @@ changing your terminal layout. The name is *turn* (your turn) + *tray*.
 
 ```sh
 cargo build --release
-./target/release/tray-app
+./target/release/turnray
 ```
 
 ## Quitting
@@ -52,5 +52,5 @@ make icons  # re-render assets/*.svg to the embedded PNGs (needs: brew install r
 Logs go to stderr when launched from a terminal:
 
 ```sh
-RUST_LOG=debug ./target/release/tray-app
+RUST_LOG=debug ./target/release/turnray
 ```

@@ -14,7 +14,7 @@ See README.md for what it does from a user's side; this file is what you need to
 make test     # cargo check --all-targets / test / clippy / fmt --check — run before every commit
 make icons    # re-render crates/tray-app/assets/*.svg into the embedded PNGs
 cargo test -p tray-app <name>   # one test, or every test whose name contains <name>
-RUST_LOG=debug ./target/release/tray-app   # logs go to stderr
+RUST_LOG=debug ./target/release/turnray   # logs go to stderr
 ```
 
 The pre-commit hooks (`.pre-commit-config.yaml`) run the same checks as `make test`.

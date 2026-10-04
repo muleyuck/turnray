@@ -3,6 +3,10 @@ name = "tray-app"
 version = "0.1.0"
 edition = "2021"
 
+[[bin]]
+name = "turnray"
+path = "src/main.rs"
+
 [dependencies]
 agent-core = { path = "../agent-core" }
 png = "0.18.1"
