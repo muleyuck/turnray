@@ -27,6 +27,23 @@ changing your terminal layout. The name is *turn* (your turn) + *tray*.
   `/opt/local/bin`, `/usr/bin`, `~/.local/bin` and `~/.cargo/bin`, then falls back to
   `command -v herdr` in a zsh login shell (`zsh -l`: `.zprofile` is read, `.zshrc` is not)
 
+## Install
+
+```sh
+brew install --cask muleyuck/tap/turnray
+```
+
+Or download `turnray-<version>.zip` from
+[Releases](https://github.com/muleyuck/turnray/releases), unzip it, move `turnray.app` to
+`/Applications`, and clear the quarantine flag (the app is ad-hoc signed, not notarized,
+so Gatekeeper blocks it otherwise):
+
+```sh
+xattr -dr com.apple.quarantine /Applications/turnray.app
+```
+
+To start turnray at login, add it in System Settings > General > Login Items.
+
 ## Build
 
 ```sh
