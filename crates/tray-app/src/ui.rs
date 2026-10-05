@@ -99,6 +99,16 @@ pub fn truncate_label(s: &str, max_chars: usize) -> String {
     out
 }
 
+/// Text from herdr is shown as-is, and a terminal title is whatever a program in the pane
+/// set. A control character becomes a space so it can't break or blank the line, and a
+/// bidi control is dropped so it can't make the line read backwards.
+fn displayable(s: &str) -> String {
+    s.chars()
+        .filter(|c| !matches!(c, '\u{200E}' | '\u{200F}' | '\u{061C}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'))
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect()
+}
+
 fn agent_label(a: &Agent) -> String {
     let parts: Vec<&str> = [a.name.as_str(), a.workspace.as_str(), a.title.as_str()]
         .into_iter()
@@ -108,7 +118,7 @@ fn agent_label(a: &Agent) -> String {
     if a.focused {
         label.push_str(" (focused)");
     }
-    truncate_label(&label, ITEM_MAX_CHARS)
+    truncate_label(&displayable(&label), ITEM_MAX_CHARS)
 }
 
 /// All five, always: a status this source never reports is still listed, marked as such.
@@ -152,7 +162,7 @@ pub fn menu_model(state: &DisplayState, settings: &Settings, emitted: &[Status])
             entries.push(MenuEntry::Disabled("No agents".into()))
         }
         DisplayState::Ok { agents } => push_agents(&mut entries, agents, settings),
-        DisplayState::Error { line } => entries.push(MenuEntry::Disabled(line.clone())),
+        DisplayState::Error { line } => entries.push(MenuEntry::Disabled(displayable(line))),
     }
     if !entries.is_empty() {
         entries.push(MenuEntry::Separator);
@@ -352,6 +362,33 @@ mod tests {
         };
         assert_eq!(label.chars().count(), ITEM_MAX_CHARS);
         assert!(label.ends_with('…'));
+    }
+
+    #[test]
+    fn an_agent_line_cannot_be_reshaped_by_its_terminal_title() {
+        // Any program in the pane can set the title, so it must not break the line or
+        // reverse how the rest of it reads.
+        let a = agent(Status::Idle, "claude", "w", "evil\u{202E}txt.exe\nnext");
+        let model = menu_model(&ok(vec![a]), &settings(Style::Simple), &Status::ALL);
+        assert_eq!(
+            model[1],
+            MenuEntry::Disabled("claude · w · eviltxt.exe next".to_string())
+        );
+    }
+
+    #[test]
+    fn an_error_line_cannot_carry_control_characters() {
+        let model = menu_model(
+            &DisplayState::Error {
+                line: "herdr not reachable: \u{1b}[31mboom".into(),
+            },
+            &settings(Style::Simple),
+            &Status::ALL,
+        );
+        assert_eq!(
+            model[0],
+            MenuEntry::Disabled("herdr not reachable:  [31mboom".into())
+        );
     }
 
     #[test]

@@ -30,6 +30,10 @@ const SHELL_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long to wait for the drain threads once the child has exited.
 const EXIT_GRACE: Duration = Duration::from_millis(200);
 
+/// Far above any real agent list. A child printing more is read to its end but not kept,
+/// so it neither blocks on a full pipe nor grows memory without bound.
+const MAX_OUTPUT: usize = 4 * 1024 * 1024;
+
 type ShellCache = std::sync::Mutex<Option<(Option<PathBuf>, Instant)>>;
 
 /// What the login-shell fallback found, and when. Under launchd the `.app` has no shell
@@ -50,7 +54,7 @@ fn candidates() -> Vec<PathBuf> {
 
 /// `Command::output` with a deadline: past it the child's whole process group is killed
 /// and `TimedOut` returned. Its pipes are drained on their own threads so a chatty child
-/// can't block on a full pipe.
+/// can't block on a full pipe; more than `MAX_OUTPUT` on either returns `FileTooLarge`.
 fn output_with_timeout(cmd: &mut Command, timeout: Duration) -> std::io::Result<Output> {
     let mut child = cmd
         .stdin(Stdio::null())
@@ -84,45 +88,62 @@ fn output_with_timeout(cmd: &mut Command, timeout: Duration) -> std::io::Result<
     // in the background may hold the pipe open past that, so the wait for the end of the
     // pipe is short and what was read by then is the answer.
     let until = Instant::now() + EXIT_GRACE;
-    Ok(Output {
-        status,
-        stdout: stdout.collect(until),
-        stderr: stderr.collect(until),
-    })
+    match (stdout.collect(until), stderr.collect(until)) {
+        (Some(stdout), Some(stderr)) => Ok(Output {
+            status,
+            stdout,
+            stderr,
+        }),
+        _ => Err(std::io::ErrorKind::FileTooLarge.into()),
+    }
 }
 
 /// Reads a pipe to its end on a thread, keeping what it has read so far reachable.
 struct Drain {
     buf: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+    overflowed: std::sync::Arc<std::sync::atomic::AtomicBool>,
     done: std::sync::mpsc::Receiver<()>,
 }
 
 impl Drain {
     fn spawn(pipe: Option<impl Read + Send + 'static>) -> Drain {
         let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let overflowed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (tx, done) = std::sync::mpsc::channel();
         let shared = std::sync::Arc::clone(&buf);
+        let over = std::sync::Arc::clone(&overflowed);
         std::thread::spawn(move || {
             if let Some(mut pipe) = pipe {
                 let mut chunk = [0; 4096];
                 while let Ok(n @ 1..) = pipe.read(&mut chunk) {
-                    shared
-                        .lock()
-                        .expect("drain buffer")
-                        .extend_from_slice(&chunk[..n]);
+                    let mut buf = shared.lock().expect("drain buffer");
+                    if buf.len() + n > MAX_OUTPUT {
+                        over.store(true, std::sync::atomic::Ordering::Relaxed);
+                        buf.clear();
+                    } else if !over.load(std::sync::atomic::Ordering::Relaxed) {
+                        buf.extend_from_slice(&chunk[..n]);
+                    }
                 }
             }
             let _ = tx.send(());
         });
-        Drain { buf, done }
+        Drain {
+            buf,
+            overflowed,
+            done,
+        }
     }
 
-    /// Waits until `until` at most for the end of the pipe, then returns what has arrived.
-    fn collect(self, until: Instant) -> Vec<u8> {
+    /// Waits until `until` at most for the end of the pipe, then returns what has arrived,
+    /// or `None` if it was more than `MAX_OUTPUT`.
+    fn collect(self, until: Instant) -> Option<Vec<u8>> {
         let _ = self
             .done
             .recv_timeout(until.saturating_duration_since(Instant::now()));
-        std::mem::take(&mut *self.buf.lock().expect("drain buffer"))
+        if self.overflowed.load(std::sync::atomic::Ordering::Relaxed) {
+            return None;
+        }
+        Some(std::mem::take(&mut *self.buf.lock().expect("drain buffer")))
     }
 }
 
@@ -225,6 +246,11 @@ fn run(path: &Path, args: &[&str]) -> Result<String, SourceError> {
                 "herdr did not answer within {}s",
                 HERDR_TIMEOUT.as_secs()
             )));
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::FileTooLarge => {
+            return Err(SourceError::Failed(
+                "herdr answered with too much output".to_string(),
+            ));
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             invalidate();
@@ -397,6 +423,21 @@ mod tests {
             panic!("expected a failure");
         };
         assert!(msg.starts_with("unreadable agent list"), "{msg}");
+    }
+
+    #[test]
+    fn an_answer_too_large_to_hold_is_a_failure() {
+        let fake = FakeHerdr::new(
+            "too-large",
+            "head -c 5000000 /dev/zero",
+            &prints(WORKSPACE_LIST),
+        );
+        assert_eq!(
+            HerdrSource::default().fetch_from(&fake.path()),
+            Err(SourceError::Failed(
+                "herdr answered with too much output".into()
+            ))
+        );
     }
 
     #[test]
