@@ -10,7 +10,10 @@ pub enum Status {
 }
 
 impl Status {
-    pub const ALL: [Status; 5] = [
+    pub const COUNT: usize = 5;
+
+    /// Also the default priority order (`Priority::default`).
+    pub const ALL: [Status; Status::COUNT] = [
         Status::Blocked,
         Status::Done,
         Status::Idle,

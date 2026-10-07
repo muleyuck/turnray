@@ -3,22 +3,16 @@ use crate::model::{Agent, Status};
 /// The one order, most urgent first, shared by the menu bar and the list so the icon on
 /// show is always the head of the list. Always holds each of the five exactly once.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Priority([Status; 5]);
+pub struct Priority([Status; Status::COUNT]);
 
 impl Default for Priority {
     fn default() -> Self {
-        Priority([
-            Status::Blocked,
-            Status::Done,
-            Status::Idle,
-            Status::Working,
-            Status::Unknown,
-        ])
+        Priority(Status::ALL)
     }
 }
 
 impl Priority {
-    pub fn order(&self) -> &[Status; 5] {
+    pub fn order(&self) -> &[Status; Status::COUNT] {
         &self.0
     }
 
@@ -28,7 +22,7 @@ impl Priority {
             .split(',')
             .map(|p| Status::parse(p.trim()))
             .collect::<Option<_>>()?;
-        let order: [Status; 5] = parsed.try_into().ok()?;
+        let order: [Status; Status::COUNT] = parsed.try_into().ok()?;
         Status::ALL
             .iter()
             .all(|st| order.contains(st))
