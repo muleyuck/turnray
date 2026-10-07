@@ -59,15 +59,13 @@ fn main() {
                 // hidden: nothing is shown until the first fetch says what to show.
                 let tray = TrayIconBuilder::new().build().expect("tray build");
                 tray.set_visible(false).expect("tray visibility");
-                app.tray = Some(tray);
-                app.refresh();
+                app.attach_tray(tray);
             }
             Event::UserEvent(UserEvent::Update(res)) => app.on_update(res),
             Event::UserEvent(UserEvent::Menu(e)) => {
-                if let Some(action) = app.actions.get(&e.id).copied() {
-                    if app.on_action(action) {
-                        *control_flow = ControlFlow::Exit;
-                    }
+                let quit = app.on_menu_event(&e.id);
+                if quit {
+                    *control_flow = ControlFlow::Exit;
                 }
             }
             _ => {}

@@ -1,6 +1,6 @@
 //! What to show, worked out from the state alone so it can be tested without a menu bar.
 
-use agent_core::{Agent, Settings, Status, Style};
+use agent_core::{Agent, Settings, SourceError, Status, Style};
 
 pub const ITEM_MAX_CHARS: usize = 60;
 
@@ -88,6 +88,14 @@ pub enum MenuEntry {
     Style(Style),
     Priority(Vec<PriorityRow>),
     Quit,
+}
+
+/// The menu line for a failed fetch. A missing herdr says what to do about it.
+pub fn error_line(e: &SourceError) -> String {
+    match e {
+        SourceError::NotFound(msg) => format!("{msg} — install herdr and start it"),
+        SourceError::Failed(msg) => msg.clone(),
+    }
 }
 
 pub fn truncate_label(s: &str, max_chars: usize) -> String {
@@ -389,6 +397,15 @@ mod tests {
             model[0],
             MenuEntry::Disabled("herdr not reachable:  [31mboom".into())
         );
+    }
+
+    #[test]
+    fn a_missing_herdr_says_what_to_do() {
+        assert_eq!(
+            error_line(&SourceError::NotFound("herdr not found".into())),
+            "herdr not found — install herdr and start it"
+        );
+        assert_eq!(error_line(&SourceError::Failed("boom".into())), "boom");
     }
 
     #[test]

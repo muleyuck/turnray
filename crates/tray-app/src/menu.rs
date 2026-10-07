@@ -73,23 +73,16 @@ pub fn build_menu(model: &[MenuEntry]) -> (Menu, HashMap<MenuId, MenuAction>) {
     (menu, actions)
 }
 
-fn error_line(e: &SourceError) -> String {
-    match e {
-        SourceError::NotFound(msg) => format!("{msg} — install herdr and start it"),
-        SourceError::Failed(msg) => msg.clone(),
-    }
-}
-
 pub struct App {
-    pub tray: Option<TrayIcon>,
-    pub state: DisplayState,
-    pub settings: Settings,
-    pub emitted: &'static [Status],
+    tray: Option<TrayIcon>,
+    state: DisplayState,
+    settings: Settings,
+    emitted: &'static [Status],
     /// What the tray was last given, so nothing is re-sent every second.
-    pub last_view: Option<TrayView>,
+    last_view: Option<TrayView>,
     /// What `set_menu` was last given.
-    pub last_model: Option<Vec<MenuEntry>>,
-    pub actions: HashMap<MenuId, MenuAction>,
+    last_model: Option<Vec<MenuEntry>>,
+    actions: HashMap<MenuId, MenuAction>,
 }
 
 impl App {
@@ -105,7 +98,13 @@ impl App {
         }
     }
 
-    pub fn refresh(&mut self) {
+    /// The tray can only be built once the event loop runs, so it arrives after `new`.
+    pub fn attach_tray(&mut self, tray: TrayIcon) {
+        self.tray = Some(tray);
+        self.refresh();
+    }
+
+    fn refresh(&mut self) {
         let Some(tray) = self.tray.as_ref() else {
             return;
         };
@@ -150,7 +149,7 @@ impl App {
         let state = match res {
             Ok(agents) => DisplayState::Ok { agents },
             Err(e) => DisplayState::Error {
-                line: error_line(&e),
+                line: ui::error_line(&e),
             },
         };
         // Polled every second, so only a change of failure is worth a log line.
@@ -163,8 +162,15 @@ impl App {
         self.refresh();
     }
 
-    /// Returns true when the app should quit.
-    pub fn on_action(&mut self, action: MenuAction) -> bool {
+    /// Returns true when the app should quit. An id from an older menu does nothing.
+    pub fn on_menu_event(&mut self, id: &MenuId) -> bool {
+        match self.actions.get(id).copied() {
+            Some(action) => self.on_action(action),
+            None => false,
+        }
+    }
+
+    fn on_action(&mut self, action: MenuAction) -> bool {
         match action {
             MenuAction::Quit => return true,
             MenuAction::SetStyle(style) => {
@@ -185,15 +191,6 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_missing_herdr_says_what_to_do() {
-        assert_eq!(
-            error_line(&SourceError::NotFound("herdr not found".into())),
-            "herdr not found — install herdr and start it"
-        );
-        assert_eq!(error_line(&SourceError::Failed("boom".into())), "boom");
-    }
 
     #[test]
     fn an_ampersand_in_a_line_survives_mnemonic_stripping() {
