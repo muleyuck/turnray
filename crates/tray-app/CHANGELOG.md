@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.1](https://github.com/muleyuck/turnray/compare/v0.1.0...v0.1.1) (2026-10-07)
+
+
+### Bug Fixes
+
+* keep herdr output from reshaping or flooding the menu ([3f66a2e](https://github.com/muleyuck/turnray/commit/3f66a2e79ae3fe9858718f8fb1970153027b2d5a))
+
 ## 0.1.0 (2026-10-05)
 
 
