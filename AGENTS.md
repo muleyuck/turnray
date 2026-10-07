@@ -32,7 +32,8 @@ A Cargo workspace with two crates:
     tested without a menu bar. Put display decisions here, not in `menu.rs`
   - `menu.rs` applies that to the tray item, sending only what changed
   - `images.rs` decodes the embedded PNGs and composes the Full style's image at runtime
-  - `herdr.rs` finds and runs the `herdr` executable (timeouts, login-shell fallback)
+  - `herdr.rs` finds and runs the `herdr` executable (login-shell fallback); `process.rs`
+    runs a child with a deadline, a cap on its output and a process-group kill
   - `backend.rs` polls the source every second; `store.rs` saves the settings to
     `~/Library/Application Support/turnray/settings`
 

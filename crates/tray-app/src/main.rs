@@ -2,6 +2,7 @@ mod backend;
 mod herdr;
 mod images;
 mod menu;
+mod process;
 mod store;
 mod ui;
 
