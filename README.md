@@ -6,7 +6,7 @@ changing your terminal layout. The name is *turn* (your turn) + *tray*.
 
 - Each agent is in one of five statuses: **blocked**, **done**, **idle**, **working**, **unknown**.
   The menu bar shows them as badges (a speech bubble with a bang, a check, a clock, a
-  sparkle, a question mark) in front of the app's mark
+  progress ring, a question mark) in front of the app's mark
   and each number is the count of the status right next to it
 - Two styles, switched from the menu:
   - **Simple**: the most urgent status's icon and its count only
