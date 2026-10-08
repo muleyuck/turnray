@@ -90,6 +90,38 @@ pub enum MenuEntry {
     Quit,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PanelContent {
+    /// Before the first fetch. The tray is hidden then, so the panel can't be opened
+    Empty,
+    /// One group per status that has an agent, in priority order
+    Groups(Vec<PanelGroup>),
+    /// No agents, or a failed fetch: one line in place of the list
+    Message { text: String, warning: bool },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PanelGroup {
+    pub status: Status,
+    pub count: usize,
+    pub agents: Vec<AgentCard>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentCard {
+    /// Agent and workspace, the empty ones left out
+    pub heading: String,
+    /// The terminal title; `None` when it is empty, so the card has no second line
+    pub title: Option<String>,
+}
+
+/// What the ⚙ button's menu offers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SettingsMenu {
+    pub style: Style,
+    pub priority: Vec<PriorityRow>,
+}
+
 /// The menu line for a failed fetch. A missing herdr says what to do about it.
 pub fn error_line(e: &SourceError) -> String {
     match e {
@@ -124,6 +156,17 @@ fn agent_label(a: &Agent) -> String {
         .collect();
     let label = parts.join(" · ");
     truncate_label(&displayable(&label), ITEM_MAX_CHARS)
+}
+
+fn agent_card(a: &Agent) -> AgentCard {
+    let heading: Vec<&str> = [a.name.as_str(), a.workspace.as_str()]
+        .into_iter()
+        .filter(|p| !p.is_empty())
+        .collect();
+    AgentCard {
+        heading: displayable(&heading.join(" · ")),
+        title: (!a.title.is_empty()).then(|| displayable(&a.title)),
+    }
 }
 
 /// All five, always: a status this source never reports is still listed, marked as such.
@@ -177,6 +220,46 @@ pub fn menu_model(state: &DisplayState, settings: &Settings, emitted: &[Status])
     entries.push(MenuEntry::Separator);
     entries.push(MenuEntry::Quit);
     entries
+}
+
+pub fn panel_model(state: &DisplayState, settings: &Settings) -> PanelContent {
+    match state {
+        DisplayState::BeforeFirstFetch => PanelContent::Empty,
+        DisplayState::Ok { agents } if agents.is_empty() => PanelContent::Message {
+            text: "No agents".into(),
+            warning: false,
+        },
+        DisplayState::Ok { agents } => {
+            let mut sorted = agents.to_vec();
+            settings.priority.sort(&mut sorted);
+            let groups = settings
+                .priority
+                .counts(&sorted)
+                .into_iter()
+                .map(|(status, count)| PanelGroup {
+                    status,
+                    count,
+                    agents: sorted
+                        .iter()
+                        .filter(|a| a.status == status)
+                        .map(agent_card)
+                        .collect(),
+                })
+                .collect();
+            PanelContent::Groups(groups)
+        }
+        DisplayState::Error { line } => PanelContent::Message {
+            text: displayable(line),
+            warning: true,
+        },
+    }
+}
+
+pub fn settings_model(settings: &Settings, emitted: &[Status]) -> SettingsMenu {
+    SettingsMenu {
+        style: settings.style,
+        priority: priority_rows(settings, emitted),
+    }
 }
 
 #[cfg(test)]
@@ -441,6 +524,156 @@ mod tests {
         let model = menu_model(&ok(vec![]), &settings(Style::Simple), &Status::ALL);
         assert_eq!(model[0], MenuEntry::Disabled("No agents".into()));
         assert_eq!(model[1], MenuEntry::Separator);
+    }
+
+    // --- panel_model ---
+
+    fn groups(content: PanelContent) -> Vec<PanelGroup> {
+        match content {
+            PanelContent::Groups(groups) => groups,
+            other => panic!("expected groups, got {other:?}"),
+        }
+    }
+
+    fn card(heading: &str, title: Option<&str>) -> AgentCard {
+        AgentCard {
+            heading: heading.into(),
+            title: title.map(Into::into),
+        }
+    }
+
+    #[test]
+    fn the_panel_groups_agents_by_status_in_priority_order() {
+        let groups = groups(panel_model(&ok(sample()), &settings(Style::Simple)));
+        assert_eq!(
+            groups,
+            vec![
+                PanelGroup {
+                    status: Status::Blocked,
+                    count: 1,
+                    agents: vec![card("codex · c", None)],
+                },
+                PanelGroup {
+                    status: Status::Idle,
+                    count: 2,
+                    agents: vec![card("claude · b", None), card("claude · d", None)],
+                },
+                PanelGroup {
+                    status: Status::Working,
+                    count: 1,
+                    agents: vec![card("claude · a", None)],
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn the_panel_follows_a_changed_priority() {
+        let mut s = settings(Style::Simple);
+        s.priority = Priority::parse("working,idle,blocked,done,unknown").unwrap();
+        let order: Vec<Status> = groups(panel_model(&ok(sample()), &s))
+            .iter()
+            .map(|g| g.status)
+            .collect();
+        assert_eq!(order, [Status::Working, Status::Idle, Status::Blocked]);
+    }
+
+    #[test]
+    fn a_card_puts_agent_and_workspace_first_and_the_title_second() {
+        let a = agent(
+            Status::Idle,
+            "claude",
+            "turnray",
+            "Herdr agents menubar design",
+        );
+        let groups = groups(panel_model(&ok(vec![a]), &settings(Style::Simple)));
+        assert_eq!(
+            groups[0].agents,
+            [card(
+                "claude · turnray",
+                Some("Herdr agents menubar design")
+            )]
+        );
+    }
+
+    #[test]
+    fn an_empty_workspace_is_left_out_of_the_heading() {
+        let a = agent(Status::Idle, "claude", "", "t");
+        let groups = groups(panel_model(&ok(vec![a]), &settings(Style::Simple)));
+        assert_eq!(groups[0].agents, [card("claude", Some("t"))]);
+    }
+
+    #[test]
+    fn a_long_title_is_kept_whole_for_the_panel_to_truncate() {
+        let title = "x".repeat(200);
+        let a = agent(Status::Idle, "claude", "w", &title);
+        let groups = groups(panel_model(&ok(vec![a]), &settings(Style::Simple)));
+        assert_eq!(groups[0].agents[0].title.as_deref(), Some(title.as_str()));
+    }
+
+    #[test]
+    fn a_card_cannot_be_reshaped_by_its_terminal_title() {
+        // Any program in the pane can set the title, so it must not break the line or
+        // reverse how the rest of it reads.
+        let a = agent(
+            Status::Idle,
+            "claude",
+            "w\u{202E}x",
+            "evil\u{202E}txt.exe\nnext",
+        );
+        let groups = groups(panel_model(&ok(vec![a]), &settings(Style::Simple)));
+        assert_eq!(
+            groups[0].agents,
+            [card("claude · wx", Some("eviltxt.exe next"))]
+        );
+    }
+
+    #[test]
+    fn no_agents_is_a_message_without_a_warning() {
+        assert_eq!(
+            panel_model(&ok(vec![]), &settings(Style::Simple)),
+            PanelContent::Message {
+                text: "No agents".into(),
+                warning: false
+            }
+        );
+    }
+
+    #[test]
+    fn an_error_is_a_warning_message_without_control_characters() {
+        assert_eq!(
+            panel_model(
+                &DisplayState::Error {
+                    line: "herdr not reachable: \u{1b}[31mboom".into(),
+                },
+                &settings(Style::Simple),
+            ),
+            PanelContent::Message {
+                text: "herdr not reachable:  [31mboom".into(),
+                warning: true
+            }
+        );
+    }
+
+    #[test]
+    fn the_panel_is_empty_before_the_first_fetch() {
+        assert_eq!(
+            panel_model(&DisplayState::BeforeFirstFetch, &settings(Style::Simple)),
+            PanelContent::Empty
+        );
+    }
+
+    // --- settings_model ---
+
+    #[test]
+    fn the_settings_menu_carries_the_style_and_all_five_priorities() {
+        let m = settings_model(&settings(Style::Full), &Status::ALL);
+        assert_eq!(m.style, Style::Full);
+        assert_eq!(
+            m.priority,
+            priority_rows(&settings(Style::Full), &Status::ALL)
+        );
+        assert_eq!(m.priority.len(), 5);
     }
 
     #[test]
