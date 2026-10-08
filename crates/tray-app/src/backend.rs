@@ -11,6 +11,16 @@ const POLL_INTERVAL: Duration = Duration::from_secs(1);
 pub enum UserEvent {
     Update(Result<Vec<Agent>, SourceError>),
     Menu(MenuEvent),
+    /// A left or right click on the tray icon; `pressed` is false for the release
+    TrayClick {
+        pressed: bool,
+    },
+    /// The panel's ⚙ button
+    Settings,
+    /// The panel's Quit button
+    Quit,
+    /// Something that closes the panel: a click elsewhere, Esc, the app losing focus
+    ClosePanel,
 }
 
 fn build_runtime() -> tokio::runtime::Runtime {

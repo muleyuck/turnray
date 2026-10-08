@@ -1,17 +1,17 @@
 use std::collections::HashMap;
 
 use agent_core::{Agent, Settings, SourceError, Status, Style};
-use tray_icon::menu::{CheckMenuItem, Menu, MenuId, MenuItem, PredefinedMenuItem, Submenu};
+use tray_icon::menu::{CheckMenuItem, Menu, MenuId, MenuItem, Submenu};
 use tray_icon::TrayIcon;
 
-use crate::ui::{self, DisplayState, MenuEntry, PriorityRow, TrayImage, TrayView};
+use crate::panel::Panel;
+use crate::ui::{self, DisplayState, PanelContent, PriorityRow, SettingsMenu, TrayImage, TrayView};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MenuAction {
     SetStyle(Style),
     MoveUp(Status),
     MoveDown(Status),
-    Quit,
 }
 
 fn style_submenu(current: Style, actions: &mut HashMap<MenuId, MenuAction>) -> Submenu {
@@ -45,31 +45,14 @@ fn priority_submenu(rows: &[PriorityRow], actions: &mut HashMap<MenuId, MenuActi
     submenu
 }
 
-/// muda strips a lone `&` from item text as a mnemonic marker; `&&` renders as one `&`.
-fn escape_mnemonic(text: &str) -> String {
-    text.replace('&', "&&")
-}
-
-/// The agent lines are display-only: nothing in them is clickable.
-pub fn build_menu(model: &[MenuEntry]) -> (Menu, HashMap<MenuId, MenuAction>) {
+/// The ⚙ button's menu.
+pub fn build_settings_menu(model: &SettingsMenu) -> (Menu, HashMap<MenuId, MenuAction>) {
     let menu = Menu::new();
     let mut actions = HashMap::new();
-    for entry in model {
-        match entry {
-            MenuEntry::Disabled(text) => {
-                menu.append(&MenuItem::new(escape_mnemonic(text), false, None))
-            }
-            MenuEntry::Separator => menu.append(&PredefinedMenuItem::separator()),
-            MenuEntry::Style(current) => menu.append(&style_submenu(*current, &mut actions)),
-            MenuEntry::Priority(rows) => menu.append(&priority_submenu(rows, &mut actions)),
-            MenuEntry::Quit => {
-                let item = MenuItem::new("Quit", true, None);
-                actions.insert(item.id().clone(), MenuAction::Quit);
-                menu.append(&item)
-            }
-        }
+    menu.append(&style_submenu(model.style, &mut actions))
         .expect("menu append");
-    }
+    menu.append(&priority_submenu(&model.priority, &mut actions))
+        .expect("menu append");
     (menu, actions)
 }
 
@@ -80,8 +63,11 @@ pub struct App {
     emitted: &'static [Status],
     /// What the tray was last given, so nothing is re-sent every second.
     last_view: Option<TrayView>,
-    /// What `set_menu` was last given.
-    last_model: Option<Vec<MenuEntry>>,
+    panel: Option<Panel>,
+    /// What the panel was last given.
+    last_content: Option<PanelContent>,
+    /// The ⚙ menu last shown, kept until the next replaces it: muda's items point into it.
+    settings_menu: Option<Menu>,
     actions: HashMap<MenuId, MenuAction>,
 }
 
@@ -93,14 +79,18 @@ impl App {
             settings,
             emitted,
             last_view: None,
-            last_model: None,
+            panel: None,
+            last_content: None,
+            settings_menu: None,
             actions: HashMap::new(),
         }
     }
 
-    /// The tray can only be built once the event loop runs, so it arrives after `new`.
-    pub fn attach_tray(&mut self, tray: TrayIcon) {
+    /// The tray and the panel can only be built once the event loop runs, so they arrive
+    /// after `new`.
+    pub fn attach(&mut self, tray: TrayIcon, panel: Panel) {
         self.tray = Some(tray);
+        self.panel = Some(panel);
         self.refresh();
     }
 
@@ -121,13 +111,12 @@ impl App {
         if last.map(|l| &l.title) != Some(&view.title) {
             tray.set_title(Some(&view.title));
         }
-        // `set_menu` closes the menu if it is open, so it runs only on a real change.
-        let model = ui::menu_model(&self.state, &self.settings, self.emitted);
-        if self.last_model.as_ref() != Some(&model) {
-            let (menu, actions) = build_menu(&model);
-            tray.set_menu(Some(Box::new(menu)));
-            self.actions = actions;
-            self.last_model = Some(model);
+        let content = ui::panel_model(&self.state, &self.settings);
+        if self.last_content.as_ref() != Some(&content) {
+            if let Some(panel) = self.panel.as_mut() {
+                panel.set_content(&content);
+            }
+            self.last_content = Some(content);
         }
         if last.map(|l| l.visible) != Some(view.visible) {
             tray.set_visible(view.visible).expect("tray visibility");
@@ -162,38 +151,55 @@ impl App {
         self.refresh();
     }
 
-    /// Returns true when the app should quit. An id from an older menu does nothing.
-    pub fn on_menu_event(&mut self, id: &MenuId) -> bool {
-        match self.actions.get(id).copied() {
-            Some(action) => self.on_action(action),
-            None => false,
-        }
-    }
-
-    fn on_action(&mut self, action: MenuAction) -> bool {
+    /// An id from an older menu does nothing.
+    pub fn on_menu_event(&mut self, id: &MenuId) {
+        let Some(action) = self.actions.get(id).copied() else {
+            return;
+        };
         match action {
-            MenuAction::Quit => return true,
-            MenuAction::SetStyle(style) => {
-                self.settings.style = style;
-                // macOS flips a check item's mark on click, so re-picking the current style
-                // unchecks it while the model stays equal; force a rebuild to restore it.
-                self.last_model = None;
-            }
+            MenuAction::SetStyle(style) => self.settings.style = style,
             MenuAction::MoveUp(status) => self.settings.priority.move_up(status),
             MenuAction::MoveDown(status) => self.settings.priority.move_down(status),
         }
         crate::store::save(&self.settings);
         self.refresh();
-        false
     }
-}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+    /// Opens or closes the panel on the press; the release only keeps the icon pressed.
+    pub fn on_tray_click(&mut self, pressed: bool) {
+        let (Some(tray), Some(panel)) = (self.tray.as_ref(), self.panel.as_mut()) else {
+            return;
+        };
+        if !pressed {
+            if panel.is_shown() {
+                panel.keep_highlight();
+            }
+        } else if panel.is_shown() {
+            panel.close();
+        } else if let Some(item) = tray.ns_status_item() {
+            panel.show(&item);
+        }
+    }
 
-    #[test]
-    fn an_ampersand_in_a_line_survives_mnemonic_stripping() {
-        assert_eq!(escape_mnemonic("R&D · a && b"), "R&&D · a &&&& b");
+    /// Built afresh each time, so a check item macOS flipped on its last click is redrawn
+    /// from the settings.
+    pub fn on_settings(&mut self) {
+        let Some(panel) = self.panel.as_ref() else {
+            return;
+        };
+        if !panel.is_shown() {
+            return;
+        }
+        let (menu, actions) =
+            build_settings_menu(&ui::settings_model(&self.settings, self.emitted));
+        self.actions = actions;
+        panel.show_settings_menu(&menu);
+        self.settings_menu = Some(menu);
+    }
+
+    pub fn close_panel(&mut self) {
+        if let Some(panel) = self.panel.as_mut() {
+            panel.close();
+        }
     }
 }

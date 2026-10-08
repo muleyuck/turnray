@@ -1,8 +1,7 @@
-//! What to show, worked out from the state alone so it can be tested without a menu bar.
+//! What to show, worked out from the state alone so it can be tested without a menu bar
+//! or a panel.
 
 use agent_core::{Agent, Settings, SourceError, Status, Style};
-
-pub const ITEM_MAX_CHARS: usize = 60;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DisplayState {
@@ -17,7 +16,7 @@ pub enum TrayImage {
     Status(Status),
     /// Full style: every status that has an agent, with its count drawn in
     Full(Vec<(Status, usize)>),
-    /// No agents: something stays on show so the menu can still be opened
+    /// No agents: something stays on show so the panel can still be opened
     Standby,
     Error,
 }
@@ -82,15 +81,6 @@ pub struct PriorityRow {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MenuEntry {
-    Disabled(String),
-    Separator,
-    Style(Style),
-    Priority(Vec<PriorityRow>),
-    Quit,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PanelContent {
     /// Before the first fetch. The tray is hidden then, so the panel can't be opened
     Empty,
@@ -122,21 +112,12 @@ pub struct SettingsMenu {
     pub priority: Vec<PriorityRow>,
 }
 
-/// The menu line for a failed fetch. A missing herdr says what to do about it.
+/// The panel line for a failed fetch. A missing herdr says what to do about it.
 pub fn error_line(e: &SourceError) -> String {
     match e {
         SourceError::NotFound(msg) => format!("{msg} — install herdr and start it"),
         SourceError::Failed(msg) => msg.clone(),
     }
-}
-
-pub fn truncate_label(s: &str, max_chars: usize) -> String {
-    if s.chars().count() <= max_chars {
-        return s.to_string();
-    }
-    let mut out: String = s.chars().take(max_chars.saturating_sub(1)).collect();
-    out.push('…');
-    out
 }
 
 /// Text from herdr is shown as-is, and a terminal title is whatever a program in the pane
@@ -147,15 +128,6 @@ fn displayable(s: &str) -> String {
         .filter(|c| !matches!(c, '\u{200E}' | '\u{200F}' | '\u{061C}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'))
         .map(|c| if c.is_control() { ' ' } else { c })
         .collect()
-}
-
-fn agent_label(a: &Agent) -> String {
-    let parts: Vec<&str> = [a.name.as_str(), a.workspace.as_str(), a.title.as_str()]
-        .into_iter()
-        .filter(|p| !p.is_empty())
-        .collect();
-    let label = parts.join(" · ");
-    truncate_label(&displayable(&label), ITEM_MAX_CHARS)
 }
 
 fn agent_card(a: &Agent) -> AgentCard {
@@ -188,38 +160,6 @@ pub fn priority_rows(settings: &Settings, emitted: &[Status]) -> Vec<PriorityRow
             }
         })
         .collect()
-}
-
-/// One header per status in priority order, its agents under it.
-fn push_agents(entries: &mut Vec<MenuEntry>, agents: &[Agent], settings: &Settings) {
-    let mut sorted = agents.to_vec();
-    settings.priority.sort(&mut sorted);
-    for (status, n) in settings.priority.counts(&sorted) {
-        entries.push(MenuEntry::Disabled(format!("{} ({n})", status.as_str())));
-        for a in sorted.iter().filter(|a| a.status == status) {
-            entries.push(MenuEntry::Disabled(agent_label(a)));
-        }
-    }
-}
-
-pub fn menu_model(state: &DisplayState, settings: &Settings, emitted: &[Status]) -> Vec<MenuEntry> {
-    let mut entries = Vec::new();
-    match state {
-        DisplayState::BeforeFirstFetch => {}
-        DisplayState::Ok { agents } if agents.is_empty() => {
-            entries.push(MenuEntry::Disabled("No agents".into()))
-        }
-        DisplayState::Ok { agents } => push_agents(&mut entries, agents, settings),
-        DisplayState::Error { line } => entries.push(MenuEntry::Disabled(displayable(line))),
-    }
-    if !entries.is_empty() {
-        entries.push(MenuEntry::Separator);
-    }
-    entries.push(MenuEntry::Style(settings.style));
-    entries.push(MenuEntry::Priority(priority_rows(settings, emitted)));
-    entries.push(MenuEntry::Separator);
-    entries.push(MenuEntry::Quit);
-    entries
 }
 
 pub fn panel_model(state: &DisplayState, settings: &Settings) -> PanelContent {
@@ -359,7 +299,7 @@ mod tests {
 
     #[test]
     fn no_agents_shows_the_standby_icon_without_a_count() {
-        // Hiding the item would also hide the menu, leaving no way to quit.
+        // Hiding the item would also hide the panel, leaving no way to quit.
         for style in [Style::Simple, Style::Full] {
             assert_eq!(
                 tray_view(&ok(vec![]), &settings(style)),
@@ -393,137 +333,6 @@ mod tests {
                 title: String::new()
             }
         );
-    }
-
-    // --- menu_model ---
-
-    #[test]
-    fn the_list_groups_agents_by_status_in_priority_order() {
-        let model = menu_model(&ok(sample()), &settings(Style::Simple), &Status::ALL);
-        let lines: Vec<String> = model
-            .iter()
-            .take_while(|e| **e != MenuEntry::Separator)
-            .map(|e| match e {
-                MenuEntry::Disabled(s) => s.clone(),
-                other => panic!("unexpected {other:?}"),
-            })
-            .collect();
-        assert_eq!(
-            lines,
-            [
-                "blocked (1)",
-                "codex · c",
-                "idle (2)",
-                "claude · b",
-                "claude · d",
-                "working (1)",
-                "claude · a",
-            ]
-        );
-    }
-
-    #[test]
-    fn an_agent_line_names_agent_workspace_and_title() {
-        let a = agent(
-            Status::Idle,
-            "claude",
-            "turnray",
-            "Herdr agents menubar design",
-        );
-        let model = menu_model(&ok(vec![a]), &settings(Style::Simple), &Status::ALL);
-        assert_eq!(
-            model[1],
-            MenuEntry::Disabled("claude · turnray · Herdr agents menubar design".to_string())
-        );
-    }
-
-    #[test]
-    fn a_long_agent_line_is_truncated() {
-        let a = agent(Status::Idle, "claude", "w", &"x".repeat(100));
-        let model = menu_model(&ok(vec![a]), &settings(Style::Simple), &Status::ALL);
-        let MenuEntry::Disabled(label) = &model[1] else {
-            panic!("expected a line, got {:?}", model[1]);
-        };
-        assert_eq!(label.chars().count(), ITEM_MAX_CHARS);
-        assert!(label.ends_with('…'));
-    }
-
-    #[test]
-    fn an_agent_line_cannot_be_reshaped_by_its_terminal_title() {
-        // Any program in the pane can set the title, so it must not break the line or
-        // reverse how the rest of it reads.
-        let a = agent(Status::Idle, "claude", "w", "evil\u{202E}txt.exe\nnext");
-        let model = menu_model(&ok(vec![a]), &settings(Style::Simple), &Status::ALL);
-        assert_eq!(
-            model[1],
-            MenuEntry::Disabled("claude · w · eviltxt.exe next".to_string())
-        );
-    }
-
-    #[test]
-    fn an_error_line_cannot_carry_control_characters() {
-        let model = menu_model(
-            &DisplayState::Error {
-                line: "herdr not reachable: \u{1b}[31mboom".into(),
-            },
-            &settings(Style::Simple),
-            &Status::ALL,
-        );
-        assert_eq!(
-            model[0],
-            MenuEntry::Disabled("herdr not reachable:  [31mboom".into())
-        );
-    }
-
-    #[test]
-    fn a_missing_herdr_says_what_to_do() {
-        assert_eq!(
-            error_line(&SourceError::NotFound("herdr not found".into())),
-            "herdr not found — install herdr and start it"
-        );
-        assert_eq!(error_line(&SourceError::Failed("boom".into())), "boom");
-    }
-
-    #[test]
-    fn truncate_counts_chars_not_bytes() {
-        assert_eq!(truncate_label("あいうえおか", 5), "あいうえ…");
-        assert_eq!(truncate_label("あいうえお", 5), "あいうえお");
-    }
-
-    #[test]
-    fn the_settings_and_quit_are_always_there() {
-        for state in [
-            DisplayState::BeforeFirstFetch,
-            ok(vec![]),
-            DisplayState::Error { line: "x".into() },
-        ] {
-            let model = menu_model(&state, &settings(Style::Full), &Status::ALL);
-            let n = model.len();
-            assert_eq!(model[n - 4], MenuEntry::Style(Style::Full), "{state:?}");
-            assert!(matches!(model[n - 3], MenuEntry::Priority(_)), "{state:?}");
-            assert_eq!(model[n - 2], MenuEntry::Separator);
-            assert_eq!(model[n - 1], MenuEntry::Quit);
-        }
-    }
-
-    #[test]
-    fn an_error_heads_the_menu() {
-        let model = menu_model(
-            &DisplayState::Error {
-                line: "herdr not found".into(),
-            },
-            &settings(Style::Simple),
-            &Status::ALL,
-        );
-        assert_eq!(model[0], MenuEntry::Disabled("herdr not found".into()));
-        assert_eq!(model[1], MenuEntry::Separator);
-    }
-
-    #[test]
-    fn no_agents_heads_the_menu_with_a_line_saying_so() {
-        let model = menu_model(&ok(vec![]), &settings(Style::Simple), &Status::ALL);
-        assert_eq!(model[0], MenuEntry::Disabled("No agents".into()));
-        assert_eq!(model[1], MenuEntry::Separator);
     }
 
     // --- panel_model ---
@@ -661,6 +470,15 @@ mod tests {
             panel_model(&DisplayState::BeforeFirstFetch, &settings(Style::Simple)),
             PanelContent::Empty
         );
+    }
+
+    #[test]
+    fn a_missing_herdr_says_what_to_do() {
+        assert_eq!(
+            error_line(&SourceError::NotFound("herdr not found".into())),
+            "herdr not found — install herdr and start it"
+        );
+        assert_eq!(error_line(&SourceError::Failed("boom".into())), "boom");
     }
 
     // --- settings_model ---

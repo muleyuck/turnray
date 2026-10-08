@@ -2,6 +2,7 @@ mod backend;
 mod herdr;
 mod images;
 mod menu;
+mod panel;
 mod process;
 mod store;
 mod ui;
@@ -11,10 +12,12 @@ use std::sync::Arc;
 use agent_core::DataSource;
 use backend::{spawn_backend, UserEvent};
 use menu::App;
+use objc2::MainThreadMarker;
+use panel::Panel;
 use tao::event::{Event, StartCause};
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tray_icon::menu::MenuEvent;
-use tray_icon::{Icon, TrayIconBuilder};
+use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use ui::TrayImage;
 
 /// Builds the menu bar image for `image`, ready to hand to tray-icon.
@@ -46,6 +49,20 @@ fn main() {
     MenuEvent::set_event_handler(Some(move |e: MenuEvent| {
         let _ = menu_proxy.send_event(UserEvent::Menu(e));
     }));
+    let tray_proxy = event_loop.create_proxy();
+    TrayIconEvent::set_event_handler(Some(move |e: TrayIconEvent| {
+        // Hover events and the middle button do nothing.
+        if let TrayIconEvent::Click {
+            button: MouseButton::Left | MouseButton::Right,
+            button_state,
+            ..
+        } = e
+        {
+            let pressed = button_state == MouseButtonState::Down;
+            let _ = tray_proxy.send_event(UserEvent::TrayClick { pressed });
+        }
+    }));
+    let panel_proxy = event_loop.create_proxy();
 
     let source: Arc<dyn DataSource> = Arc::new(herdr::HerdrSource::default());
     let mut app = App::new(store::load(), source.emitted_statuses());
@@ -56,17 +73,25 @@ fn main() {
         match event {
             Event::NewEvents(StartCause::Init) => {
                 // On macOS, the tray must be created after the event loop starts. It starts
-                // hidden: nothing is shown until the first fetch says what to show.
-                let tray = TrayIconBuilder::new().build().expect("tray build");
+                // hidden: nothing is shown until the first fetch says what to show. Clicks
+                // open the panel, so neither button opens a menu.
+                let tray = TrayIconBuilder::new()
+                    .with_menu_on_left_click(false)
+                    .with_menu_on_right_click(false)
+                    .build()
+                    .expect("tray build");
                 tray.set_visible(false).expect("tray visibility");
-                app.attach_tray(tray);
+                let mtm = MainThreadMarker::new().expect("event loop runs on the main thread");
+                app.attach(tray, Panel::new(panel_proxy.clone(), mtm));
             }
             Event::UserEvent(UserEvent::Update(res)) => app.on_update(res),
-            Event::UserEvent(UserEvent::Menu(e)) => {
-                let quit = app.on_menu_event(&e.id);
-                if quit {
-                    *control_flow = ControlFlow::Exit;
-                }
+            Event::UserEvent(UserEvent::Menu(e)) => app.on_menu_event(&e.id),
+            Event::UserEvent(UserEvent::TrayClick { pressed }) => app.on_tray_click(pressed),
+            Event::UserEvent(UserEvent::Settings) => app.on_settings(),
+            Event::UserEvent(UserEvent::ClosePanel) => app.close_panel(),
+            Event::UserEvent(UserEvent::Quit) => {
+                app.close_panel();
+                *control_flow = ControlFlow::Exit;
             }
             _ => {}
         }

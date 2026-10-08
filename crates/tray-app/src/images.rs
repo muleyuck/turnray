@@ -58,18 +58,27 @@ fn decode(png: &[u8]) -> Image {
     }
 }
 
-pub fn status_icon(status: Status) -> Image {
-    decode(match status {
+/// The PNG as embedded, for the panel to hand to AppKit.
+pub fn status_png(status: Status) -> &'static [u8] {
+    match status {
         Status::Blocked => BLOCKED,
         Status::Done => DONE,
         Status::Idle => IDLE,
         Status::Working => WORKING,
         Status::Unknown => UNKNOWN,
-    })
+    }
+}
+
+pub fn status_icon(status: Status) -> Image {
+    decode(status_png(status))
 }
 
 pub fn standby_icon() -> Image {
     decode(STANDBY)
+}
+
+pub fn error_png() -> &'static [u8] {
+    ERROR
 }
 
 pub fn error_icon() -> Image {
