@@ -43,7 +43,6 @@ pub struct Agent {
     pub name: String,
     pub workspace: String,
     pub title: String,
-    pub focused: bool,
 }
 
 #[cfg(test)]

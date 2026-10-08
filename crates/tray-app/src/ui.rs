@@ -122,10 +122,7 @@ fn agent_label(a: &Agent) -> String {
         .into_iter()
         .filter(|p| !p.is_empty())
         .collect();
-    let mut label = parts.join(" · ");
-    if a.focused {
-        label.push_str(" (focused)");
-    }
+    let label = parts.join(" · ");
     truncate_label(&displayable(&label), ITEM_MAX_CHARS)
 }
 
@@ -193,7 +190,6 @@ mod tests {
             name: name.into(),
             workspace: workspace.into(),
             title: title.into(),
-            focused: false,
         }
     }
 
@@ -344,20 +340,17 @@ mod tests {
     }
 
     #[test]
-    fn an_agent_line_names_agent_workspace_title_and_focus() {
-        let mut a = agent(
+    fn an_agent_line_names_agent_workspace_and_title() {
+        let a = agent(
             Status::Idle,
             "claude",
             "turnray",
             "Herdr agents menubar design",
         );
-        a.focused = true;
         let model = menu_model(&ok(vec![a]), &settings(Style::Simple), &Status::ALL);
         assert_eq!(
             model[1],
-            MenuEntry::Disabled(
-                "claude · turnray · Herdr agents menubar design (focused)".to_string()
-            )
+            MenuEntry::Disabled("claude · turnray · Herdr agents menubar design".to_string())
         );
     }
 

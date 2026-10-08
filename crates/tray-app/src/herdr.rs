@@ -261,14 +261,12 @@ mod tests {
                     name: "claude".into(),
                     workspace: "turnray".into(),
                     title: "Fix & ship".into(),
-                    focused: false,
                 },
                 Agent {
                     status: Status::Working,
                     name: "codex".into(),
                     workspace: "scoptray".into(),
                     title: "Refactor".into(),
-                    focused: true,
                 },
             ]
         );

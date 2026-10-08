@@ -36,8 +36,6 @@ struct RawAgent {
     terminal_title_stripped: Option<String>,
     #[serde(default)]
     terminal_title: Option<String>,
-    #[serde(default)]
-    focused: bool,
 }
 
 #[derive(Deserialize)]
@@ -101,7 +99,6 @@ pub fn parse_agents(json: &str, labels: &HashMap<String, String>) -> Result<Vec<
                 .cloned()
                 .unwrap_or_else(|| a.workspace_id.clone()),
             title: first_non_empty([&a.terminal_title_stripped, &a.terminal_title]),
-            focused: a.focused,
         })
         .collect())
 }
@@ -135,14 +132,12 @@ mod tests {
                     name: "claude".into(),
                     workspace: "react-vue-comparison".into(),
                     title: "Vue学習ロードマップ作成".into(),
-                    focused: false,
                 },
                 Agent {
                     status: Status::Working,
                     name: "claude".into(),
                     workspace: "turnray".into(),
                     title: "Herdr agents menubar design".into(),
-                    focused: true,
                 },
             ]
         );

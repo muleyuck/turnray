@@ -81,7 +81,6 @@ mod tests {
             name: name.into(),
             workspace: String::new(),
             title: String::new(),
-            focused: false,
         }
     }
 
