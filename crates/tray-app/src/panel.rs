@@ -10,24 +10,27 @@ use objc2::{
     define_class, msg_send, sel, AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly,
 };
 use objc2_app_kit::{
-    NSApplication, NSApplicationDidResignActiveNotification, NSBox, NSBoxType, NSButton, NSColor,
-    NSEvent, NSEventMask, NSFont, NSImage, NSImageView, NSLayoutAttribute, NSLayoutConstraint,
-    NSLayoutConstraintOrientation, NSLayoutPriorityDefaultLow, NSLineBreakMode, NSPopover,
-    NSPopoverBehavior, NSScreen, NSScrollView, NSStackView, NSStackViewGravity, NSStatusBarButton,
-    NSStatusItem, NSTextAlignment, NSTextField, NSUserInterfaceLayoutOrientation, NSView,
-    NSViewController,
+    NSApplication, NSApplicationDidResignActiveNotification, NSBackingStoreType, NSBox, NSBoxType,
+    NSButton, NSColor, NSEvent, NSEventMask, NSFont, NSImage, NSImageView, NSLayoutAttribute,
+    NSLayoutConstraint, NSLayoutConstraintOrientation, NSLayoutPriorityDefaultLow, NSLineBreakMode,
+    NSPanel, NSPopUpMenuWindowLevel, NSScreen, NSScrollView, NSStackView, NSStackViewGravity,
+    NSStatusBarButton, NSStatusItem, NSTextAlignment, NSTextField,
+    NSUserInterfaceLayoutOrientation, NSView, NSVisualEffectBlendingMode, NSVisualEffectMaterial,
+    NSVisualEffectState, NSVisualEffectView, NSWindow, NSWindowCollectionBehavior,
+    NSWindowDidMoveNotification, NSWindowDidResizeNotification, NSWindowStyleMask,
 };
 use objc2_foundation::{
-    NSArray, NSData, NSEdgeInsets, NSNotification, NSNotificationCenter, NSObject, NSRectEdge,
+    NSArray, NSData, NSEdgeInsets, NSNotification, NSNotificationCenter, NSObject, NSPoint, NSRect,
     NSSize, NSString,
 };
 use tao::event_loop::EventLoopProxy;
 
 use crate::backend::UserEvent;
 use crate::images;
-use crate::ui::{AgentCard, PanelContent, PanelGroup};
+use crate::ui::{self, AgentCard, PanelContent, PanelGroup, Rect};
 
 const WIDTH: f64 = 320.0;
+const CORNER_RADIUS: f64 = 10.0;
 const INSET: f64 = 12.0;
 /// How far a card sits in from its group's header.
 const CARD_INDENT: f64 = 26.0;
@@ -92,16 +95,90 @@ impl FlippedView {
     }
 }
 
-/// What is registered while the panel is open, to close it.
+define_class!(
+    /// The panel's window: borderless, so it has no title bar and no arrow. A borderless
+    /// window refuses to become key, which would keep Esc from reaching it.
+    #[unsafe(super(NSPanel))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "TurnrayPanelWindow"]
+    struct PanelWindow;
+
+    impl PanelWindow {
+        #[unsafe(method(canBecomeKeyWindow))]
+        fn can_become_key_window(&self) -> bool {
+            true
+        }
+    }
+);
+
+impl PanelWindow {
+    fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        let rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(WIDTH, 100.0));
+        let window: Retained<Self> = unsafe {
+            msg_send![
+                Self::alloc(mtm),
+                initWithContentRect: rect,
+                styleMask: NSWindowStyleMask::Borderless,
+                backing: NSBackingStoreType::Buffered,
+                defer: false
+            ]
+        };
+        // It is shown and hidden, never closed, so it must outlive `orderOut`.
+        unsafe { window.setReleasedWhenClosed(false) };
+        window.setLevel(NSPopUpMenuWindowLevel);
+        window.setCollectionBehavior(
+            NSWindowCollectionBehavior::CanJoinAllSpaces
+                | NSWindowCollectionBehavior::FullScreenAuxiliary
+                // Left out of Mission Control and of window cycling, like a menu.
+                | NSWindowCollectionBehavior::Transient
+                | NSWindowCollectionBehavior::IgnoresCycle,
+        );
+        // Closing is ours (see `Panel::watch`), not AppKit's on deactivation.
+        window.setHidesOnDeactivate(false);
+        window.setOpaque(false);
+        window.setBackgroundColor(Some(&NSColor::clearColor()));
+        window.setHasShadow(true);
+        window
+    }
+}
+
+/// The panel's background: the translucent material popovers use, with rounded corners.
+fn background(mtm: MainThreadMarker) -> Retained<NSVisualEffectView> {
+    let effect = NSVisualEffectView::new(mtm);
+    effect.setMaterial(NSVisualEffectMaterial::Popover);
+    effect.setBlendingMode(NSVisualEffectBlendingMode::BehindWindow);
+    effect.setState(NSVisualEffectState::Active);
+    effect.setWantsLayer(true);
+    // Through the layer by message: typing it would pull in QuartzCore for two setters.
+    unsafe {
+        let layer: Option<Retained<AnyObject>> = msg_send![&*effect, layer];
+        if let Some(layer) = layer {
+            let _: () = msg_send![&*layer, setCornerRadius: CORNER_RADIUS];
+            let _: () = msg_send![&*layer, setMasksToBounds: true];
+        }
+    }
+    effect
+}
+
+fn rect(r: NSRect) -> Rect {
+    Rect {
+        x: r.origin.x,
+        y: r.origin.y,
+        width: r.size.width,
+        height: r.size.height,
+    }
+}
+
+/// What is registered while the panel is open, to close it or move it with the icon.
 struct Watchers {
     monitors: Vec<Retained<AnyObject>>,
-    resign_active: Retained<ProtocolObject<dyn NSObjectProtocol>>,
+    observers: Vec<Retained<ProtocolObject<dyn NSObjectProtocol>>>,
 }
 
 pub struct Panel {
     mtm: MainThreadMarker,
     proxy: EventLoopProxy<UserEvent>,
-    popover: Retained<NSPopover>,
+    window: Retained<PanelWindow>,
     root: Retained<NSView>,
     list: Retained<NSStackView>,
     list_height: Retained<NSLayoutConstraint>,
@@ -110,7 +187,6 @@ pub struct Panel {
     _target: Retained<Target>,
     /// The tray button the panel hangs from, while it is open.
     anchor: Option<Retained<NSStatusBarButton>>,
-    max_list_height: f64,
     watchers: Option<Watchers>,
 }
 
@@ -273,15 +349,6 @@ fn activate_app(mtm: MainThreadMarker) {
     }
 }
 
-/// The list's height limit on the screen whose menu bar was clicked.
-fn max_list_height(anchor: &NSView, mtm: MainThreadMarker) -> f64 {
-    let screen = anchor
-        .window()
-        .and_then(|w| w.screen())
-        .or_else(|| NSScreen::mainScreen(mtm));
-    screen.map_or(600.0, |s| s.visibleFrame().size.height * MAX_SCREEN_SHARE)
-}
-
 impl Panel {
     pub fn new(proxy: EventLoopProxy<UserEvent>, mtm: MainThreadMarker) -> Panel {
         let target = Target::new(proxy.clone(), mtm);
@@ -420,31 +487,37 @@ impl Panel {
                 .constraintEqualToAnchor(&root.bottomAnchor()),
         ]);
 
-        let controller = NSViewController::new(mtm);
-        controller.setView(&root);
-        let popover = NSPopover::new(mtm);
-        // Closing is ours: AppKit's transient closing would also fire on a click on the
-        // tray icon, which then reopens it.
-        popover.setBehavior(NSPopoverBehavior::ApplicationDefined);
-        popover.setContentViewController(Some(&controller));
+        let effect = background(mtm);
+        root.setTranslatesAutoresizingMaskIntoConstraints(false);
+        effect.addSubview(&root);
+        // Top and sides only: the window is sized to the root, not the other way round.
+        activate(&[
+            root.topAnchor()
+                .constraintEqualToAnchor(&effect.topAnchor()),
+            root.leadingAnchor()
+                .constraintEqualToAnchor(&effect.leadingAnchor()),
+            root.trailingAnchor()
+                .constraintEqualToAnchor(&effect.trailingAnchor()),
+        ]);
+        let window = PanelWindow::new(mtm);
+        window.setContentView(Some(&effect));
 
         Panel {
             mtm,
             proxy,
-            popover,
+            window,
             root,
             list,
             list_height,
             settings_button,
             _target: target,
             anchor: None,
-            max_list_height: 600.0,
             watchers: None,
         }
     }
 
     pub fn is_shown(&self) -> bool {
-        self.popover.isShown()
+        self.window.isVisible()
     }
 
     /// Replaces the list. Done while closed too, so the panel opens on the latest.
@@ -479,32 +552,59 @@ impl Panel {
         }
     }
 
-    /// Fits the list to its content, up to the limit, and the panel to both.
+    /// The icon's frame and its screen's, read afresh: a status item keeps its right edge,
+    /// so its left edge moves whenever the Full style's image changes width.
+    fn placement(&self) -> Option<(Rect, Rect)> {
+        let bar = self.anchor.as_ref()?.window()?;
+        // The screen whose menu bar was clicked, which need not be the main one.
+        let screen = bar.screen().or_else(|| NSScreen::mainScreen(self.mtm))?;
+        Some((rect(bar.frame()), rect(screen.visibleFrame())))
+    }
+
+    /// Fits the list to its content, up to the limit, and the window to both, hanging
+    /// from the icon.
     fn resize(&self) {
+        let Some((icon, visible)) = self.placement() else {
+            return;
+        };
         let content = self.list.fittingSize().height;
         self.list_height
-            .setConstant(content.min(self.max_list_height));
+            .setConstant(content.min(visible.height * MAX_SCREEN_SHARE));
         self.root.layoutSubtreeIfNeeded();
-        self.popover
-            .setContentSize(NSSize::new(WIDTH, self.root.fittingSize().height));
+        let f = ui::panel_frame(icon, WIDTH, self.root.fittingSize().height, visible);
+        self.window.setFrame_display(
+            NSRect::new(NSPoint::new(f.x, f.y), NSSize::new(f.width, f.height)),
+            true,
+        );
+        // The shadow follows the rounded corners only once it is redrawn for the new size.
+        self.window.invalidateShadow();
     }
 
     /// Opens the panel under `item`'s button. Does nothing while the item is hidden.
     pub fn show(&mut self, item: &NSStatusItem) {
-        let Some(button) = item.button(self.mtm) else {
+        let mtm = self.mtm;
+        let Some(button) = item.button(mtm) else {
             return;
         };
-        activate_app(self.mtm);
-        self.max_list_height = max_list_height(&button, self.mtm);
-        self.resize();
-        self.popover.showRelativeToRect_ofView_preferredEdge(
-            button.bounds(),
-            &button,
-            NSRectEdge::MinY,
-        );
-        button.highlight(true);
+        let Some(bar) = button.window() else {
+            return;
+        };
         self.anchor = Some(button);
-        self.watch();
+        self.resize();
+        let app = NSApplication::sharedApplication(mtm);
+        // The last close may have hidden the app to hand the keyboard back.
+        app.unhide(None);
+        activate_app(mtm);
+        self.window.makeKeyAndOrderFront(None);
+        self.keep_highlight();
+        self.watch(&bar);
+    }
+
+    /// The icon moved or changed width while open: hang from it again.
+    pub fn follow_anchor(&self) {
+        if self.is_shown() {
+            self.resize();
+        }
     }
 
     /// tray-icon unhighlights the button on every mouse up; while open it stays pressed.
@@ -514,19 +614,21 @@ impl Panel {
         }
     }
 
-    pub fn close(&mut self) {
-        if !self.is_shown() {
-            return;
-        }
-        self.popover.close();
+    /// `hand_back` is for a close the user made inside the app (Esc, the tray icon): the
+    /// keyboard goes back to the app that had it. Closed by a click elsewhere or by losing
+    /// focus, another app already has it.
+    pub fn close(&mut self, hand_back: bool) {
+        // Undone even if the window is already gone, so nothing outlives the panel.
         self.unwatch();
         if let Some(button) = self.anchor.take() {
             button.highlight(false);
         }
-        // Closed by Esc or the tray icon, the app is still frontmost: hand the keyboard
-        // back to the app that had it.
+        if !self.is_shown() {
+            return;
+        }
+        self.window.orderOut(None);
         let app = NSApplication::sharedApplication(self.mtm);
-        if app.isActive() {
+        if hand_back && app.isActive() {
             app.hide(None);
         }
     }
@@ -544,19 +646,19 @@ impl Panel {
         }
     }
 
-    fn watch(&mut self) {
+    fn watch(&mut self, bar: &NSWindow) {
         self.unwatch();
         let send_close = {
             let proxy = self.proxy.clone();
-            move || {
-                let _ = proxy.send_event(UserEvent::ClosePanel);
+            move |hand_back: bool| {
+                let _ = proxy.send_event(UserEvent::ClosePanel { hand_back });
             }
         };
         let mut monitors = Vec::new();
         let on_click = send_close.clone();
         if let Some(m) = NSEvent::addGlobalMonitorForEventsMatchingMask_handler(
             NSEventMask::LeftMouseDown | NSEventMask::RightMouseDown,
-            &RcBlock::new(move |_: NonNull<NSEvent>| on_click()),
+            &RcBlock::new(move |_: NonNull<NSEvent>| on_click(false)),
         ) {
             monitors.push(m);
         }
@@ -564,7 +666,7 @@ impl Panel {
         // Returning null swallows the Esc; anything else goes on to the panel.
         let on_key_down = RcBlock::new(move |event: NonNull<NSEvent>| -> *mut NSEvent {
             if unsafe { event.as_ref() }.keyCode() == ESCAPE_KEY_CODE {
-                on_key();
+                on_key(true);
                 std::ptr::null_mut()
             } else {
                 event.as_ptr()
@@ -579,17 +681,32 @@ impl Panel {
         if let Some(m) = local {
             monitors.push(m);
         }
-        let resign_active = unsafe {
-            NSNotificationCenter::defaultCenter().addObserverForName_object_queue_usingBlock(
+        let center = NSNotificationCenter::defaultCenter();
+        let mut observers = vec![unsafe {
+            center.addObserverForName_object_queue_usingBlock(
                 Some(NSApplicationDidResignActiveNotification),
                 None,
                 None,
-                &RcBlock::new(move |_: NonNull<NSNotification>| send_close()),
+                &RcBlock::new(move |_: NonNull<NSNotification>| send_close(false)),
             )
-        };
+        }];
+        // Sent on, not handled here: the frame is read once the change has settled.
+        for name in unsafe { [NSWindowDidResizeNotification, NSWindowDidMoveNotification] } {
+            let proxy = self.proxy.clone();
+            observers.push(unsafe {
+                center.addObserverForName_object_queue_usingBlock(
+                    Some(name),
+                    Some(bar),
+                    None,
+                    &RcBlock::new(move |_: NonNull<NSNotification>| {
+                        let _ = proxy.send_event(UserEvent::AnchorMoved);
+                    }),
+                )
+            });
+        }
         self.watchers = Some(Watchers {
             monitors,
-            resign_active,
+            observers,
         });
     }
 
@@ -600,7 +717,10 @@ impl Panel {
         for m in &w.monitors {
             unsafe { NSEvent::removeMonitor(m) };
         }
-        let observer: &AnyObject = w.resign_active.as_ref();
-        unsafe { NSNotificationCenter::defaultCenter().removeObserver(observer) };
+        let center = NSNotificationCenter::defaultCenter();
+        for o in &w.observers {
+            let observer: &AnyObject = o.as_ref();
+            unsafe { center.removeObserver(observer) };
+        }
     }
 }

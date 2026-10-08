@@ -100,7 +100,7 @@ impl App {
         };
         let view = ui::tray_view(&self.state, &self.settings);
         let last = self.last_view.as_ref();
-        // tray-icon keeps icon, title and menu while hidden and applies them when the item
+        // tray-icon keeps icon and title while hidden and applies them when the item
         // comes back, so they are updated before visibility. A hidden view carries no image
         // worth drawing (the full style's would be zero pixels wide), so it is skipped.
         if view.visible && last.map(|l| &l.image) != Some(&view.image) {
@@ -175,7 +175,7 @@ impl App {
                 panel.keep_highlight();
             }
         } else if panel.is_shown() {
-            panel.close();
+            panel.close(true);
         } else if let Some(item) = tray.ns_status_item() {
             panel.show(&item);
         }
@@ -197,9 +197,15 @@ impl App {
         self.settings_menu = Some(menu);
     }
 
-    pub fn close_panel(&mut self) {
+    pub fn follow_anchor(&self) {
+        if let Some(panel) = self.panel.as_ref() {
+            panel.follow_anchor();
+        }
+    }
+
+    pub fn close_panel(&mut self, hand_back: bool) {
         if let Some(panel) = self.panel.as_mut() {
-            panel.close();
+            panel.close(hand_back);
         }
     }
 }

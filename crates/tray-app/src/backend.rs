@@ -19,8 +19,13 @@ pub enum UserEvent {
     Settings,
     /// The panel's Quit button
     Quit,
-    /// Something that closes the panel: a click elsewhere, Esc, the app losing focus
-    ClosePanel,
+    /// Something that closes the panel: a click elsewhere or the app losing focus, or Esc,
+    /// which alone hands the keyboard back (see `Panel::close`)
+    ClosePanel {
+        hand_back: bool,
+    },
+    /// The tray icon moved or changed width while the panel hangs from it
+    AnchorMoved,
 }
 
 fn build_runtime() -> tokio::runtime::Runtime {

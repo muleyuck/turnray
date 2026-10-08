@@ -112,6 +112,33 @@ pub struct SettingsMenu {
     pub priority: Vec<PriorityRow>,
 }
 
+/// A rectangle in screen points, with AppKit's bottom-left origin.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Rect {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+/// Between the menu bar and the panel's top.
+pub const PANEL_GAP: f64 = 4.0;
+/// Kept between the panel and the screen's sides.
+pub const PANEL_MARGIN: f64 = 8.0;
+
+/// Where the panel goes: its top left just under the icon's left edge, as a menu opens,
+/// moved only as far as it takes to stay on `visible` (the screen less the menu bar).
+pub fn panel_frame(icon: Rect, width: f64, height: f64, visible: Rect) -> Rect {
+    let rightmost = visible.x + visible.width - PANEL_MARGIN - width;
+    let x = icon.x.min(rightmost).max(visible.x + PANEL_MARGIN);
+    Rect {
+        x,
+        y: icon.y - PANEL_GAP - height,
+        width,
+        height,
+    }
+}
+
 /// The panel line for a failed fetch. A missing herdr says what to do about it.
 pub fn error_line(e: &SourceError) -> String {
     match e {
@@ -131,13 +158,20 @@ fn displayable(s: &str) -> String {
 }
 
 fn agent_card(a: &Agent) -> AgentCard {
-    let heading: Vec<&str> = [a.name.as_str(), a.workspace.as_str()]
+    let parts: Vec<&str> = [a.name.as_str(), a.workspace.as_str()]
         .into_iter()
         .filter(|p| !p.is_empty())
         .collect();
+    let heading = displayable(&parts.join(" · "));
+    let title = displayable(&a.title);
     AgentCard {
-        heading: displayable(&heading.join(" · ")),
-        title: (!a.title.is_empty()).then(|| displayable(&a.title)),
+        // herdr can leave both out, and a blank bold line reads as a drawing fault.
+        heading: if heading.trim().is_empty() {
+            "unknown agent".into()
+        } else {
+            heading
+        },
+        title: (!title.trim().is_empty()).then_some(title),
     }
 }
 
@@ -481,6 +515,67 @@ mod tests {
         assert_eq!(error_line(&SourceError::Failed("boom".into())), "boom");
     }
 
+    #[test]
+    fn a_card_with_neither_agent_nor_workspace_says_so() {
+        let a = agent(Status::Idle, "", "", "t");
+        let groups = groups(panel_model(&ok(vec![a]), &settings(Style::Simple)));
+        assert_eq!(groups[0].agents, [card("unknown agent", Some("t"))]);
+    }
+
+    #[test]
+    fn a_title_of_only_control_characters_leaves_no_second_line() {
+        let a = agent(Status::Idle, "claude", "w", "\u{202E}\n");
+        let groups = groups(panel_model(&ok(vec![a]), &settings(Style::Simple)));
+        assert_eq!(groups[0].agents, [card("claude · w", None)]);
+    }
+
+    // --- panel_frame ---
+
+    const SCREEN: Rect = Rect {
+        x: 0.0,
+        y: 0.0,
+        width: 1728.0,
+        height: 1080.0,
+    };
+
+    fn icon_at(x: f64) -> Rect {
+        Rect {
+            x,
+            y: 1080.0,
+            width: 30.0,
+            height: 24.0,
+        }
+    }
+
+    #[test]
+    fn the_panel_hangs_from_the_icons_left_edge() {
+        assert_eq!(
+            panel_frame(icon_at(1000.0), 320.0, 300.0, SCREEN),
+            Rect {
+                x: 1000.0,
+                y: 1080.0 - PANEL_GAP - 300.0,
+                width: 320.0,
+                height: 300.0
+            }
+        );
+    }
+
+    #[test]
+    fn near_the_right_edge_the_panel_moves_left_to_stay_on_screen() {
+        let f = panel_frame(icon_at(1700.0), 320.0, 300.0, SCREEN);
+        assert_eq!(f.x, 1728.0 - PANEL_MARGIN - 320.0);
+    }
+
+    #[test]
+    fn on_a_screen_left_of_the_main_one_the_panel_stays_on_it() {
+        let screen = Rect {
+            x: -1440.0,
+            ..SCREEN
+        };
+        let f = panel_frame(icon_at(-1440.0), 320.0, 300.0, screen);
+        assert_eq!(f.x, -1440.0 + PANEL_MARGIN);
+    }
+
     // --- settings_model ---
 
     #[test]
@@ -492,6 +587,16 @@ mod tests {
             priority_rows(&settings(Style::Full), &Status::ALL)
         );
         assert_eq!(m.priority.len(), 5);
+    }
+
+    #[test]
+    fn the_settings_menu_marks_what_the_source_never_reports() {
+        let m = settings_model(
+            &settings(Style::Simple),
+            &[Status::Blocked, Status::Done, Status::Working],
+        );
+        assert_eq!(m.priority.len(), 5);
+        assert_eq!(m.priority[2].label, "3. idle — not reported by this source");
     }
 
     #[test]

@@ -33,8 +33,8 @@ A Cargo workspace with two crates:
     not in `menu.rs` or `panel.rs`
   - `menu.rs` holds the app's state (`App`): applies it to the tray item and the panel,
     sending only what changed, and builds the ⚙ button's menu
-  - `panel.rs` lays out the panel (an `NSPopover`, AppKit through objc2) from
-    `PanelContent`, and opens and closes it
+  - `panel.rs` lays out the panel (a borderless `NSPanel` hung under the tray icon, AppKit
+    through objc2) from `PanelContent`, and opens and closes it
   - `images.rs` decodes the embedded PNGs and composes the Full style's image at runtime
   - `herdr.rs` finds and runs the `herdr` executable (login-shell fallback); `process.rs`
     runs a child with a deadline, a cap on its output and a process-group kill
