@@ -175,7 +175,7 @@ impl App {
                 panel.keep_highlight();
             }
         } else if panel.is_shown() {
-            panel.close(true);
+            panel.close();
         } else if let Some(item) = tray.ns_status_item() {
             panel.show(&item);
         }
@@ -203,9 +203,9 @@ impl App {
         }
     }
 
-    pub fn close_panel(&mut self, hand_back: bool) {
+    pub fn close_panel(&mut self) {
         if let Some(panel) = self.panel.as_mut() {
-            panel.close(hand_back);
+            panel.close();
         }
     }
 }

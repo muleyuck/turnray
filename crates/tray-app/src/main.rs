@@ -88,10 +88,10 @@ fn main() {
             Event::UserEvent(UserEvent::Menu(e)) => app.on_menu_event(&e.id),
             Event::UserEvent(UserEvent::TrayClick { pressed }) => app.on_tray_click(pressed),
             Event::UserEvent(UserEvent::Settings) => app.on_settings(),
-            Event::UserEvent(UserEvent::ClosePanel { hand_back }) => app.close_panel(hand_back),
+            Event::UserEvent(UserEvent::ClosePanel) => app.close_panel(),
             Event::UserEvent(UserEvent::AnchorMoved) => app.follow_anchor(),
             Event::UserEvent(UserEvent::Quit) => {
-                app.close_panel(false);
+                app.close_panel();
                 *control_flow = ControlFlow::Exit;
             }
             _ => {}

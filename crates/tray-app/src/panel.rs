@@ -5,19 +5,19 @@ use std::ptr::NonNull;
 
 use block2::RcBlock;
 use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, NSObjectProtocol, ProtocolObject};
+use objc2::runtime::{AnyObject, NSObjectProtocol, ProtocolObject, Sel};
 use objc2::{
     define_class, msg_send, sel, AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly,
 };
 use objc2_app_kit::{
-    NSApplication, NSApplicationDidResignActiveNotification, NSBackingStoreType, NSBox, NSBoxType,
-    NSButton, NSColor, NSEvent, NSEventMask, NSFont, NSImage, NSImageView, NSLayoutAttribute,
-    NSLayoutConstraint, NSLayoutConstraintOrientation, NSLayoutPriorityDefaultLow, NSLineBreakMode,
-    NSPanel, NSPopUpMenuWindowLevel, NSScreen, NSScrollView, NSStackView, NSStackViewGravity,
-    NSStatusBarButton, NSStatusItem, NSTextAlignment, NSTextField,
-    NSUserInterfaceLayoutOrientation, NSView, NSVisualEffectBlendingMode, NSVisualEffectMaterial,
-    NSVisualEffectState, NSVisualEffectView, NSWindow, NSWindowCollectionBehavior,
-    NSWindowDidMoveNotification, NSWindowDidResizeNotification, NSWindowStyleMask,
+    NSBackingStoreType, NSBox, NSBoxType, NSButton, NSColor, NSEvent, NSEventMask, NSFont, NSImage,
+    NSImageView, NSLayoutAttribute, NSLayoutConstraint, NSLayoutConstraintOrientation,
+    NSLayoutPriorityDefaultLow, NSLineBreakMode, NSPanel, NSPopUpMenuWindowLevel, NSScreen,
+    NSScrollView, NSStackView, NSStackViewGravity, NSStatusBarButton, NSStatusItem,
+    NSTextAlignment, NSTextField, NSUserInterfaceLayoutOrientation, NSView,
+    NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView,
+    NSWindow, NSWindowCollectionBehavior, NSWindowDidMoveNotification,
+    NSWindowDidResignKeyNotification, NSWindowDidResizeNotification, NSWindowStyleMask,
 };
 use objc2_foundation::{
     NSArray, NSData, NSEdgeInsets, NSNotification, NSNotificationCenter, NSObject, NSPoint, NSRect,
@@ -96,8 +96,9 @@ impl FlippedView {
 }
 
 define_class!(
-    /// The panel's window: borderless, so it has no title bar and no arrow. A borderless
-    /// window refuses to become key, which would keep Esc from reaching it.
+    /// The panel's window. Borderless, so it has no title bar; non-activating, so it takes
+    /// the keyboard without bringing the app forward, and closing it leaves the app that
+    /// was in front where it was, as a menu does.
     #[unsafe(super(NSPanel))]
     #[thread_kind = MainThreadOnly]
     #[name = "TurnrayPanelWindow"]
@@ -106,7 +107,18 @@ define_class!(
     impl PanelWindow {
         #[unsafe(method(canBecomeKeyWindow))]
         fn can_become_key_window(&self) -> bool {
+            // A borderless window refuses by default, which would keep Esc from it.
             true
+        }
+
+        /// The panel takes no typing, and a key nothing handles would beep. Only the beep
+        /// goes: Tab and Space still move to and press the buttons with Full Keyboard
+        /// Access, which a no-op `keyDown:` would swallow too.
+        #[unsafe(method(noResponderFor:))]
+        fn no_responder_for(&self, selector: Sel) {
+            if selector != sel!(keyDown:) {
+                unsafe { msg_send![super(self), noResponderFor: selector] }
+            }
         }
     }
 );
@@ -118,12 +130,12 @@ impl PanelWindow {
             msg_send![
                 Self::alloc(mtm),
                 initWithContentRect: rect,
-                styleMask: NSWindowStyleMask::Borderless,
+                styleMask: NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel,
                 backing: NSBackingStoreType::Buffered,
                 defer: false
             ]
         };
-        // It is shown and hidden, never closed, so it must outlive `orderOut`.
+        // Owned through `Retained`; AppKit must not release it on close as well.
         unsafe { window.setReleasedWhenClosed(false) };
         window.setLevel(NSPopUpMenuWindowLevel);
         window.setCollectionBehavior(
@@ -133,7 +145,7 @@ impl PanelWindow {
                 | NSWindowCollectionBehavior::Transient
                 | NSWindowCollectionBehavior::IgnoresCycle,
         );
-        // Closing is ours (see `Panel::watch`), not AppKit's on deactivation.
+        // Closing is ours (see `Panel::watch`), not AppKit's.
         window.setHidesOnDeactivate(false);
         window.setOpaque(false);
         window.setBackgroundColor(Some(&NSColor::clearColor()));
@@ -336,17 +348,6 @@ fn separator(mtm: MainThreadMarker) -> Retained<NSBox> {
     let b = NSBox::new(mtm);
     b.setBoxType(NSBoxType::Separator);
     b
-}
-
-/// `activate` arrived in macOS 14; the app still runs on 11, which only has the older call.
-fn activate_app(mtm: MainThreadMarker) {
-    let app = NSApplication::sharedApplication(mtm);
-    if app.respondsToSelector(sel!(activate)) {
-        app.activate();
-    } else {
-        #[allow(deprecated)]
-        app.activateIgnoringOtherApps(true);
-    }
 }
 
 impl Panel {
@@ -591,10 +592,6 @@ impl Panel {
         };
         self.anchor = Some(button);
         self.resize();
-        let app = NSApplication::sharedApplication(mtm);
-        // The last close may have hidden the app to hand the keyboard back.
-        app.unhide(None);
-        activate_app(mtm);
         self.window.makeKeyAndOrderFront(None);
         self.keep_highlight();
         self.watch(&bar);
@@ -614,10 +611,7 @@ impl Panel {
         }
     }
 
-    /// `hand_back` is for a close the user made inside the app (Esc, the tray icon): the
-    /// keyboard goes back to the app that had it. Closed by a click elsewhere or by losing
-    /// focus, another app already has it.
-    pub fn close(&mut self, hand_back: bool) {
+    pub fn close(&mut self) {
         // Undone even if the window is already gone, so nothing outlives the panel.
         self.unwatch();
         if let Some(button) = self.anchor.take() {
@@ -627,10 +621,6 @@ impl Panel {
             return;
         }
         self.window.orderOut(None);
-        let app = NSApplication::sharedApplication(self.mtm);
-        if hand_back && app.isActive() {
-            app.hide(None);
-        }
     }
 
     /// Pops the ⚙ menu up under its button. Returns once the menu closes.
@@ -650,15 +640,15 @@ impl Panel {
         self.unwatch();
         let send_close = {
             let proxy = self.proxy.clone();
-            move |hand_back: bool| {
-                let _ = proxy.send_event(UserEvent::ClosePanel { hand_back });
+            move || {
+                let _ = proxy.send_event(UserEvent::ClosePanel);
             }
         };
         let mut monitors = Vec::new();
         let on_click = send_close.clone();
         if let Some(m) = NSEvent::addGlobalMonitorForEventsMatchingMask_handler(
             NSEventMask::LeftMouseDown | NSEventMask::RightMouseDown,
-            &RcBlock::new(move |_: NonNull<NSEvent>| on_click(false)),
+            &RcBlock::new(move |_: NonNull<NSEvent>| on_click()),
         ) {
             monitors.push(m);
         }
@@ -666,7 +656,7 @@ impl Panel {
         // Returning null swallows the Esc; anything else goes on to the panel.
         let on_key_down = RcBlock::new(move |event: NonNull<NSEvent>| -> *mut NSEvent {
             if unsafe { event.as_ref() }.keyCode() == ESCAPE_KEY_CODE {
-                on_key(true);
+                on_key();
                 std::ptr::null_mut()
             } else {
                 event.as_ptr()
@@ -682,12 +672,13 @@ impl Panel {
             monitors.push(m);
         }
         let center = NSNotificationCenter::defaultCenter();
+        // The panel losing the keyboard: Cmd-Tab, or a click in another app.
         let mut observers = vec![unsafe {
             center.addObserverForName_object_queue_usingBlock(
-                Some(NSApplicationDidResignActiveNotification),
+                Some(NSWindowDidResignKeyNotification),
+                Some(&self.window),
                 None,
-                None,
-                &RcBlock::new(move |_: NonNull<NSNotification>| send_close(false)),
+                &RcBlock::new(move |_: NonNull<NSNotification>| send_close()),
             )
         }];
         // Sent on, not handled here: the frame is read once the change has settled.

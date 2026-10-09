@@ -19,11 +19,8 @@ pub enum UserEvent {
     Settings,
     /// The panel's Quit button
     Quit,
-    /// Something that closes the panel: a click elsewhere or the app losing focus, or Esc,
-    /// which alone hands the keyboard back (see `Panel::close`)
-    ClosePanel {
-        hand_back: bool,
-    },
+    /// Something that closes the panel: a click elsewhere, Esc, the panel losing the keyboard
+    ClosePanel,
     /// The tray icon moved or changed width while the panel hangs from it
     AnchorMoved,
 }
