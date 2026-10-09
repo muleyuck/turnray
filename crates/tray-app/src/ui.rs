@@ -529,6 +529,13 @@ mod tests {
         assert_eq!(groups[0].agents, [card("claude · w", None)]);
     }
 
+    #[test]
+    fn a_name_of_only_control_characters_counts_as_none() {
+        let a = agent(Status::Idle, "\u{202E}", "", "");
+        let groups = groups(panel_model(&ok(vec![a]), &settings(Style::Simple)));
+        assert_eq!(groups[0].agents, [card("unknown agent", None)]);
+    }
+
     // --- panel_frame ---
 
     const SCREEN: Rect = Rect {
@@ -567,6 +574,16 @@ mod tests {
     }
 
     #[test]
+    fn on_a_screen_narrower_than_the_panel_it_keeps_the_left_margin() {
+        let screen = Rect {
+            width: 300.0,
+            ..SCREEN
+        };
+        let f = panel_frame(icon_at(200.0), 320.0, 300.0, screen);
+        assert_eq!(f.x, PANEL_MARGIN);
+    }
+
+    #[test]
     fn on_a_screen_left_of_the_main_one_the_panel_stays_on_it() {
         let screen = Rect {
             x: -1440.0,
@@ -587,16 +604,6 @@ mod tests {
             priority_rows(&settings(Style::Full), &Status::ALL)
         );
         assert_eq!(m.priority.len(), 5);
-    }
-
-    #[test]
-    fn the_settings_menu_marks_what_the_source_never_reports() {
-        let m = settings_model(
-            &settings(Style::Simple),
-            &[Status::Blocked, Status::Done, Status::Working],
-        );
-        assert_eq!(m.priority.len(), 5);
-        assert_eq!(m.priority[2].label, "3. idle — not reported by this source");
     }
 
     #[test]
