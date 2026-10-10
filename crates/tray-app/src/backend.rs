@@ -1,22 +1,30 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use agent_core::{Agent, DataSource, SourceError};
+use agent_core::{Agent, DataSource, SourceError, Status, Style};
 use tao::event_loop::EventLoopProxy;
-use tray_icon::menu::MenuEvent;
+
+use crate::ui::Dir;
 
 /// herdr's own tab bar polls at the same rate.
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 pub enum UserEvent {
     Update(Result<Vec<Agent>, SourceError>),
-    Menu(MenuEvent),
     /// A left or right click on the tray icon; `pressed` is false for the release
     TrayClick {
         pressed: bool,
     },
-    /// The panel's ⚙ button
+    /// The panel's ⚙ button: between the list and the settings view
     Settings,
+    /// The settings view's Style control
+    SetStyle(Style),
+    /// A priority row's ↑ or ↓; `keyboard` when the button had the keyboard focus
+    Move {
+        status: Status,
+        dir: Dir,
+        keyboard: bool,
+    },
     /// The panel's Quit button
     Quit,
     /// Something that closes the panel: a click elsewhere, Esc, the panel losing the keyboard

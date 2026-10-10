@@ -16,7 +16,6 @@ use objc2::MainThreadMarker;
 use panel::Panel;
 use tao::event::{Event, StartCause};
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
-use tray_icon::menu::MenuEvent;
 use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use ui::TrayImage;
 
@@ -45,10 +44,6 @@ fn main() {
         event_loop.set_activation_policy(ActivationPolicy::Accessory);
     }
 
-    let menu_proxy = event_loop.create_proxy();
-    MenuEvent::set_event_handler(Some(move |e: MenuEvent| {
-        let _ = menu_proxy.send_event(UserEvent::Menu(e));
-    }));
     let tray_proxy = event_loop.create_proxy();
     TrayIconEvent::set_event_handler(Some(move |e: TrayIconEvent| {
         // Hover events and the middle button do nothing.
@@ -85,9 +80,14 @@ fn main() {
                 app.attach(tray, Panel::new(panel_proxy.clone(), mtm));
             }
             Event::UserEvent(UserEvent::Update(res)) => app.on_update(res),
-            Event::UserEvent(UserEvent::Menu(e)) => app.on_menu_event(&e.id),
             Event::UserEvent(UserEvent::TrayClick { pressed }) => app.on_tray_click(pressed),
             Event::UserEvent(UserEvent::Settings) => app.on_settings(),
+            Event::UserEvent(UserEvent::SetStyle(style)) => app.set_style(style),
+            Event::UserEvent(UserEvent::Move {
+                status,
+                dir,
+                keyboard,
+            }) => app.move_status(status, dir, keyboard),
             Event::UserEvent(UserEvent::ClosePanel) => app.close_panel(),
             Event::UserEvent(UserEvent::AnchorMoved) => app.follow_anchor(),
             Event::UserEvent(UserEvent::Quit) => {

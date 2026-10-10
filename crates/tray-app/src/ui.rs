@@ -74,10 +74,20 @@ pub fn tray_view(state: &DisplayState, settings: &Settings) -> TrayView {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PriorityRow {
+    /// From 1
+    pub rank: usize,
     pub status: Status,
-    pub label: String,
+    /// False when this source never reports the status, so the row says so
+    pub reported: bool,
     pub can_move_up: bool,
     pub can_move_down: bool,
+}
+
+/// Which way a priority row's button moves its status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Dir {
+    Up,
+    Down,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -105,9 +115,9 @@ pub struct AgentCard {
     pub title: Option<String>,
 }
 
-/// What the ⚙ button's menu offers.
+/// What the panel's settings view shows.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SettingsMenu {
+pub struct SettingsView {
     pub style: Style,
     pub priority: Vec<PriorityRow>,
 }
@@ -181,19 +191,29 @@ pub fn priority_rows(settings: &Settings, emitted: &[Status]) -> Vec<PriorityRow
     order
         .iter()
         .enumerate()
-        .map(|(i, &status)| {
-            let mut label = format!("{}. {}", i + 1, status.as_str());
-            if !emitted.contains(&status) {
-                label.push_str(" — not reported by this source");
-            }
-            PriorityRow {
-                status,
-                label,
-                can_move_up: i > 0,
-                can_move_down: i + 1 < order.len(),
-            }
+        .map(|(i, &status)| PriorityRow {
+            rank: i + 1,
+            status,
+            reported: emitted.contains(&status),
+            can_move_up: i > 0,
+            can_move_down: i + 1 < order.len(),
         })
         .collect()
+}
+
+/// After a move made from the keyboard, the button to focus: the moved status's new
+/// row, the same way unless that end is reached, so pressing on keeps moving it.
+pub fn focus_after_move(rows: &[PriorityRow], status: Status, dir: Dir) -> (usize, Dir) {
+    let i = rows
+        .iter()
+        .position(|r| r.status == status)
+        .expect("the rows hold every status");
+    let dir = match dir {
+        Dir::Up if !rows[i].can_move_up => Dir::Down,
+        Dir::Down if !rows[i].can_move_down => Dir::Up,
+        d => d,
+    };
+    (i, dir)
 }
 
 pub fn panel_model(state: &DisplayState, settings: &Settings) -> PanelContent {
@@ -229,8 +249,8 @@ pub fn panel_model(state: &DisplayState, settings: &Settings) -> PanelContent {
     }
 }
 
-pub fn settings_model(settings: &Settings, emitted: &[Status]) -> SettingsMenu {
-    SettingsMenu {
+pub fn settings_model(settings: &Settings, emitted: &[Status]) -> SettingsView {
+    SettingsView {
         style: settings.style,
         priority: priority_rows(settings, emitted),
     }
@@ -595,34 +615,51 @@ mod tests {
 
     // --- settings_model ---
 
+    fn row(rank: usize, status: Status, up: bool, down: bool) -> PriorityRow {
+        PriorityRow {
+            rank,
+            status,
+            reported: true,
+            can_move_up: up,
+            can_move_down: down,
+        }
+    }
+
     #[test]
-    fn the_settings_menu_carries_the_style_and_all_five_priorities() {
+    fn the_settings_view_carries_the_style_and_all_five_priorities() {
         let m = settings_model(&settings(Style::Full), &Status::ALL);
         assert_eq!(m.style, Style::Full);
         assert_eq!(
             m.priority,
-            priority_rows(&settings(Style::Full), &Status::ALL)
+            [
+                row(1, Status::Blocked, false, true),
+                row(2, Status::Done, true, true),
+                row(3, Status::Idle, true, true),
+                row(4, Status::Working, true, true),
+                row(5, Status::Unknown, true, false),
+            ]
         );
-        assert_eq!(m.priority.len(), 5);
     }
 
     #[test]
-    fn priority_rows_list_all_five_and_disable_moves_past_the_ends() {
-        let rows = priority_rows(&settings(Style::Simple), &Status::ALL);
-        let labels: Vec<&str> = rows.iter().map(|r| r.label.as_str()).collect();
+    fn the_settings_view_follows_a_changed_priority() {
+        let mut s = settings(Style::Simple);
+        s.priority = Priority::parse("working,idle,blocked,done,unknown").unwrap();
+        let order: Vec<Status> = settings_model(&s, &Status::ALL)
+            .priority
+            .iter()
+            .map(|r| r.status)
+            .collect();
         assert_eq!(
-            labels,
+            order,
             [
-                "1. blocked",
-                "2. done",
-                "3. idle",
-                "4. working",
-                "5. unknown"
+                Status::Working,
+                Status::Idle,
+                Status::Blocked,
+                Status::Done,
+                Status::Unknown
             ]
         );
-        assert!(!rows[0].can_move_up && rows[0].can_move_down);
-        assert!(rows[2].can_move_up && rows[2].can_move_down);
-        assert!(rows[4].can_move_up && !rows[4].can_move_down);
     }
 
     #[test]
@@ -631,8 +668,41 @@ mod tests {
             &settings(Style::Simple),
             &[Status::Blocked, Status::Done, Status::Working],
         );
-        assert_eq!(rows.len(), 5);
-        assert_eq!(rows[2].label, "3. idle — not reported by this source");
-        assert_eq!(rows[3].label, "4. working");
+        let reported: Vec<bool> = rows.iter().map(|r| r.reported).collect();
+        assert_eq!(reported, [true, true, false, true, false]);
+    }
+
+    // --- focus_after_move ---
+
+    fn rows_after(order: &str) -> Vec<PriorityRow> {
+        let mut s = settings(Style::Simple);
+        s.priority = Priority::parse(order).unwrap();
+        priority_rows(&s, &Status::ALL)
+    }
+
+    #[test]
+    fn focus_follows_the_moved_status_to_its_new_row() {
+        // idle was third and has just moved up to second.
+        let rows = rows_after("blocked,idle,done,working,unknown");
+        assert_eq!(focus_after_move(&rows, Status::Idle, Dir::Up), (1, Dir::Up));
+        // done was second and has just moved down to third.
+        assert_eq!(
+            focus_after_move(&rows, Status::Done, Dir::Down),
+            (2, Dir::Down)
+        );
+    }
+
+    #[test]
+    fn at_an_end_focus_turns_to_the_way_still_open() {
+        let rows = rows_after("idle,blocked,done,working,unknown");
+        assert_eq!(
+            focus_after_move(&rows, Status::Idle, Dir::Up),
+            (0, Dir::Down)
+        );
+        let rows = rows_after("blocked,done,working,idle,unknown");
+        assert_eq!(
+            focus_after_move(&rows, Status::Unknown, Dir::Down),
+            (4, Dir::Up)
+        );
     }
 }

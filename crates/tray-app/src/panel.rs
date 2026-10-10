@@ -1,8 +1,10 @@
-//! The panel the tray icon opens: the list `ui::panel_model` works out, display-only,
-//! with the ⚙ and Quit buttons under it. Nothing here decides what to show.
+//! The panel the tray icon opens: the agent list `ui::panel_model` works out, which is
+//! display-only, or the settings view `ui::settings_model` works out, with the ⚙ (between
+//! the two) and Quit buttons under them. Nothing here decides what to show.
 
 use std::ptr::NonNull;
 
+use agent_core::{Status, Style};
 use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObjectProtocol, ProtocolObject, Sel};
@@ -12,8 +14,9 @@ use objc2::{
 use objc2_app_kit::{
     NSBackingStoreType, NSBox, NSBoxType, NSButton, NSColor, NSEvent, NSEventMask, NSFont, NSImage,
     NSImageView, NSLayoutAttribute, NSLayoutConstraint, NSLayoutConstraintOrientation,
-    NSLayoutPriorityDefaultLow, NSLineBreakMode, NSPanel, NSPopUpMenuWindowLevel, NSScreen,
-    NSScrollView, NSStackView, NSStackViewGravity, NSStatusBarButton, NSStatusItem,
+    NSLayoutPriorityDefaultHigh, NSLayoutPriorityDefaultLow, NSLineBreakMode, NSPanel,
+    NSPopUpMenuWindowLevel, NSResponder, NSScreen, NSScrollView, NSSegmentSwitchTracking,
+    NSSegmentedControl, NSStackView, NSStackViewGravity, NSStatusBarButton, NSStatusItem,
     NSTextAlignment, NSTextField, NSUserInterfaceLayoutOrientation, NSView,
     NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView,
     NSWindow, NSWindowCollectionBehavior, NSWindowDidMoveNotification,
@@ -27,7 +30,7 @@ use tao::event_loop::EventLoopProxy;
 
 use crate::backend::UserEvent;
 use crate::images;
-use crate::ui::{self, AgentCard, PanelContent, PanelGroup, Rect};
+use crate::ui::{self, AgentCard, Dir, PanelContent, PanelGroup, Rect, SettingsView};
 
 const WIDTH: f64 = 320.0;
 const CORNER_RADIUS: f64 = 10.0;
@@ -35,7 +38,7 @@ const INSET: f64 = 12.0;
 /// How far a card sits in from its group's header.
 const CARD_INDENT: f64 = 26.0;
 const ICON_SIZE: f64 = 18.0;
-/// The list never takes more of the screen than this, so the buttons stay on it.
+/// The scrolled part never takes more of the screen than this, so the buttons stay on it.
 const MAX_SCREEN_SHARE: f64 = 0.6;
 const ESCAPE_KEY_CODE: u16 = 53;
 
@@ -61,6 +64,29 @@ define_class!(
         fn quit(&self, _sender: Option<&AnyObject>) {
             let _ = self.ivars().proxy.send_event(UserEvent::Quit);
         }
+
+        #[unsafe(method(style:))]
+        fn style(&self, sender: Option<&NSSegmentedControl>) {
+            let Some(sender) = sender else {
+                return;
+            };
+            let style = match sender.selectedSegment() {
+                0 => Style::Simple,
+                1 => Style::Full,
+                _ => return,
+            };
+            let _ = self.ivars().proxy.send_event(UserEvent::SetStyle(style));
+        }
+
+        #[unsafe(method(moveUp:))]
+        fn move_up(&self, sender: Option<&NSButton>) {
+            self.send_move(sender, Dir::Up);
+        }
+
+        #[unsafe(method(moveDown:))]
+        fn move_down(&self, sender: Option<&NSButton>) {
+            self.send_move(sender, Dir::Down);
+        }
     }
 
     unsafe impl NSObjectProtocol for Target {}
@@ -71,11 +97,34 @@ impl Target {
         let this = Self::alloc(mtm).set_ivars(TargetIvars { proxy });
         unsafe { msg_send![super(this), init] }
     }
+
+    /// The button's tag is the status's place in `Status::ALL`. It had the keyboard if it
+    /// is the window's first responder: pressed with Space rather than clicked.
+    fn send_move(&self, sender: Option<&NSButton>, dir: Dir) {
+        let Some(sender) = sender else {
+            return;
+        };
+        let Some(&status) = usize::try_from(sender.tag())
+            .ok()
+            .and_then(|i| Status::ALL.get(i))
+        else {
+            return;
+        };
+        let keyboard = sender
+            .window()
+            .and_then(|w| w.firstResponder())
+            .is_some_and(|r| std::ptr::eq(Retained::as_ptr(&r).cast::<NSButton>(), sender));
+        let _ = self.ivars().proxy.send_event(UserEvent::Move {
+            status,
+            dir,
+            keyboard,
+        });
+    }
 }
 
 define_class!(
-    /// The list's document view. Flipped, so the list hangs from the top: it opens at its
-    /// first line and keeps its scroll position when its height changes.
+    /// The scroll view's document view. Flipped, so what it holds hangs from the top: it
+    /// opens at its first line and keeps its scroll position when its height changes.
     #[unsafe(super(NSView))]
     #[thread_kind = MainThreadOnly]
     #[name = "TurnrayFlippedView"]
@@ -187,14 +236,38 @@ struct Watchers {
     observers: Vec<Retained<ProtocolObject<dyn NSObjectProtocol>>>,
 }
 
+/// One priority row of the settings view, rewritten in place by `set_settings`.
+struct PriorityRowViews {
+    rank: Retained<NSTextField>,
+    badge: Retained<NSImageView>,
+    name: Retained<NSTextField>,
+    note: Retained<NSTextField>,
+    up: Retained<NSButton>,
+    down: Retained<NSButton>,
+}
+
 pub struct Panel {
     mtm: MainThreadMarker,
     proxy: EventLoopProxy<UserEvent>,
     window: Retained<PanelWindow>,
     root: Retained<NSView>,
+    document: Retained<FlippedView>,
     list: Retained<NSStackView>,
-    list_height: Retained<NSLayoutConstraint>,
+    settings: Retained<NSStackView>,
+    style_control: Retained<NSSegmentedControl>,
+    rows: Vec<PriorityRowViews>,
+    /// One badge per status, in `Status::ALL` order, decoded once.
+    badges: Vec<Retained<NSImage>>,
+    /// Holds the scroll view to the shown view's height, up to the screen share.
+    scroll_height: Retained<NSLayoutConstraint>,
+    /// The document ends at one of these, whichever view is on show.
+    list_bottom: Retained<NSLayoutConstraint>,
+    settings_bottom: Retained<NSLayoutConstraint>,
     settings_button: Retained<NSButton>,
+    /// What the ⚙ button shows: a gear on the list, a way back on the settings view.
+    gear: Option<Retained<NSImage>>,
+    back: Option<Retained<NSImage>>,
+    showing_settings: bool,
     /// Kept alive here: a button holds its target weakly.
     _target: Retained<Target>,
     /// The tray button the panel hangs from, while it is open.
@@ -222,12 +295,16 @@ fn label(
 }
 
 /// A template image, so AppKit tints it to the text colour like the menu bar does.
-fn icon(png: &[u8], mtm: MainThreadMarker) -> Retained<NSImageView> {
+fn template_image(png: &[u8]) -> Retained<NSImage> {
     let image =
         NSImage::initWithData(NSImage::alloc(), &NSData::with_bytes(png)).expect("embedded PNG");
     image.setTemplate(true);
     image.setSize(NSSize::new(ICON_SIZE, ICON_SIZE));
-    let view = NSImageView::imageViewWithImage(&image, mtm);
+    image
+}
+
+fn icon(png: &[u8], mtm: MainThreadMarker) -> Retained<NSImageView> {
+    let view = NSImageView::imageViewWithImage(&template_image(png), mtm);
     view.setContentTintColor(Some(&NSColor::labelColor()));
     activate(&[
         view.widthAnchor().constraintEqualToConstant(ICON_SIZE),
@@ -250,7 +327,8 @@ fn activate(constraints: &[Retained<NSLayoutConstraint>]) {
     NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(constraints));
 }
 
-/// Makes `view` as wide as `list` less its insets, so every row shares one width.
+/// Makes `view` as wide as the stack holding it less its insets, so every row shares one
+/// width.
 fn fill_width(view: &NSView, list: &NSStackView, indent: f64) {
     view.setTranslatesAutoresizingMaskIntoConstraints(false);
     activate(&[view
@@ -350,6 +428,151 @@ fn separator(mtm: MainThreadMarker) -> Retained<NSBox> {
     b
 }
 
+fn symbol(name: &str, description: &str) -> Option<Retained<NSImage>> {
+    NSImage::imageWithSystemSymbolName_accessibilityDescription(
+        &NSString::from_str(name),
+        Some(&NSString::from_str(description)),
+    )
+}
+
+/// A button showing an SF Symbol, or `fallback` text where the symbol can't be loaded.
+fn symbol_button(
+    name: &str,
+    description: &str,
+    fallback: &str,
+    target: &Target,
+    action: Sel,
+    mtm: MainThreadMarker,
+) -> Retained<NSButton> {
+    match symbol(name, description) {
+        Some(image) => unsafe {
+            NSButton::buttonWithImage_target_action(&image, Some(target), Some(action), mtm)
+        },
+        None => unsafe {
+            NSButton::buttonWithTitle_target_action(
+                &NSString::from_str(fallback),
+                Some(target),
+                Some(action),
+                mtm,
+            )
+        },
+    }
+}
+
+fn section_label(text: &str, mtm: MainThreadMarker) -> Retained<NSTextField> {
+    label(
+        text,
+        &NSFont::boldSystemFontOfSize(11.0),
+        &NSColor::secondaryLabelColor(),
+        mtm,
+    )
+}
+
+/// One row of the priority list, empty until `set_settings` fills it in.
+fn priority_row(
+    target: &Target,
+    mtm: MainThreadMarker,
+) -> (Retained<NSStackView>, PriorityRowViews) {
+    let views = PriorityRowViews {
+        rank: label(
+            "",
+            &NSFont::systemFontOfSize(13.0),
+            &NSColor::secondaryLabelColor(),
+            mtm,
+        ),
+        badge: icon(images::status_png(Status::Unknown), mtm),
+        name: label(
+            "",
+            &NSFont::boldSystemFontOfSize(13.0),
+            &NSColor::labelColor(),
+            mtm,
+        ),
+        note: label(
+            "— not reported by this source",
+            &NSFont::systemFontOfSize(11.0),
+            &NSColor::secondaryLabelColor(),
+            mtm,
+        ),
+        up: symbol_button("chevron.up", "Move up", "↑", target, sel!(moveUp:), mtm),
+        down: symbol_button(
+            "chevron.down",
+            "Move down",
+            "↓",
+            target,
+            sel!(moveDown:),
+            mtm,
+        ),
+    };
+    // The note gives way first, so the rank and the name stay whole.
+    for keep in [&views.rank, &views.name] {
+        keep.setContentCompressionResistancePriority_forOrientation(
+            NSLayoutPriorityDefaultHigh,
+            NSLayoutConstraintOrientation::Horizontal,
+        );
+    }
+    // No bezel, so a row is as tall as its badge, like a group header in the list.
+    views.up.setBordered(false);
+    views.down.setBordered(false);
+    let row = NSStackView::new(mtm);
+    row.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
+    row.setSpacing(6.0);
+    let leading: [&NSView; 4] = [&views.rank, &views.badge, &views.name, &views.note];
+    let trailing: [&NSView; 2] = [&views.up, &views.down];
+    row.setViews_inGravity(&NSArray::from_slice(&leading), NSStackViewGravity::Leading);
+    row.setViews_inGravity(
+        &NSArray::from_slice(&trailing),
+        NSStackViewGravity::Trailing,
+    );
+    (row, views)
+}
+
+/// The settings view, built once: Style, then the five priority rows.
+fn settings_view(
+    target: &Target,
+    mtm: MainThreadMarker,
+) -> (
+    Retained<NSStackView>,
+    Retained<NSSegmentedControl>,
+    Vec<PriorityRowViews>,
+) {
+    let settings = NSStackView::new(mtm);
+    settings.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
+    settings.setAlignment(NSLayoutAttribute::Leading);
+    settings.setSpacing(8.0);
+    settings.setEdgeInsets(NSEdgeInsets {
+        top: INSET,
+        left: INSET,
+        bottom: INSET,
+        right: INSET,
+    });
+    settings.setTranslatesAutoresizingMaskIntoConstraints(false);
+
+    let labels = [NSString::from_str("Simple"), NSString::from_str("Full")];
+    let style_control = unsafe {
+        NSSegmentedControl::segmentedControlWithLabels_trackingMode_target_action(
+            &NSArray::from_retained_slice(&labels),
+            NSSegmentSwitchTracking::SelectOne,
+            Some(target),
+            Some(sel!(style:)),
+            mtm,
+        )
+    };
+    settings.addArrangedSubview(&section_label("Style", mtm));
+    settings.addArrangedSubview(&style_control);
+    let rule = separator(mtm);
+    settings.addArrangedSubview(&rule);
+    fill_width(&rule, &settings, 0.0);
+    settings.addArrangedSubview(&section_label("Priority", mtm));
+    let mut rows = Vec::new();
+    for _ in Status::ALL {
+        let (row, views) = priority_row(target, mtm);
+        settings.addArrangedSubview(&row);
+        fill_width(&row, &settings, 0.0);
+        rows.push(views);
+    }
+    (settings, style_control, rows)
+}
+
 impl Panel {
     pub fn new(proxy: EventLoopProxy<UserEvent>, mtm: MainThreadMarker) -> Panel {
         let target = Target::new(proxy.clone(), mtm);
@@ -365,10 +588,21 @@ impl Panel {
             right: INSET,
         });
         list.setTranslatesAutoresizingMaskIntoConstraints(false);
+        let (settings, style_control, rows) = settings_view(&target, mtm);
+        settings.setHidden(true);
 
+        // The list and the settings view, one shown at a time, both kept in the document
+        // so their constraints stay. The document ends where the one on show does.
         let document = FlippedView::new(mtm);
         document.setTranslatesAutoresizingMaskIntoConstraints(false);
         document.addSubview(&list);
+        document.addSubview(&settings);
+        let list_bottom = list
+            .bottomAnchor()
+            .constraintEqualToAnchor(&document.bottomAnchor());
+        let settings_bottom = settings
+            .bottomAnchor()
+            .constraintEqualToAnchor(&document.bottomAnchor());
 
         let scroll = NSScrollView::new(mtm);
         scroll.setTranslatesAutoresizingMaskIntoConstraints(false);
@@ -378,28 +612,14 @@ impl Panel {
         scroll.setDocumentView(Some(&document));
         let clip = scroll.contentView();
 
-        let gear = NSImage::imageWithSystemSymbolName_accessibilityDescription(
-            &NSString::from_str("gearshape"),
-            Some(&NSString::from_str("Settings")),
+        let settings_button = symbol_button(
+            "gearshape",
+            "Settings",
+            "Settings",
+            &target,
+            sel!(settings:),
+            mtm,
         );
-        let settings_button = match gear {
-            Some(image) => unsafe {
-                NSButton::buttonWithImage_target_action(
-                    &image,
-                    Some(&target),
-                    Some(sel!(settings:)),
-                    mtm,
-                )
-            },
-            None => unsafe {
-                NSButton::buttonWithTitle_target_action(
-                    &NSString::from_str("Settings"),
-                    Some(&target),
-                    Some(sel!(settings:)),
-                    mtm,
-                )
-            },
-        };
         let quit_button = unsafe {
             NSButton::buttonWithTitle_target_action(
                 &NSString::from_str("Quit"),
@@ -436,19 +656,27 @@ impl Panel {
         root.addSubview(&rule);
         root.addSubview(&footer);
 
-        let list_height = scroll.heightAnchor().constraintEqualToConstant(0.0);
+        let scroll_height = scroll.heightAnchor().constraintEqualToConstant(0.0);
         activate(&[
             root.widthAnchor().constraintEqualToConstant(WIDTH),
-            // The list fills the document view, which is as wide as the clip view and as
-            // tall as the list.
+            // Both views hang from the top of the document view, which is as wide as the
+            // clip view; `apply_view` picks which one's bottom it ends at.
             list.topAnchor()
                 .constraintEqualToAnchor(&document.topAnchor()),
             list.leadingAnchor()
                 .constraintEqualToAnchor(&document.leadingAnchor()),
             list.trailingAnchor()
                 .constraintEqualToAnchor(&document.trailingAnchor()),
-            list.bottomAnchor()
-                .constraintEqualToAnchor(&document.bottomAnchor()),
+            settings
+                .topAnchor()
+                .constraintEqualToAnchor(&document.topAnchor()),
+            settings
+                .leadingAnchor()
+                .constraintEqualToAnchor(&document.leadingAnchor()),
+            settings
+                .trailingAnchor()
+                .constraintEqualToAnchor(&document.trailingAnchor()),
+            list_bottom.clone(),
             document
                 .topAnchor()
                 .constraintEqualToAnchor(&clip.topAnchor()),
@@ -467,7 +695,7 @@ impl Panel {
             scroll
                 .trailingAnchor()
                 .constraintEqualToAnchor(&root.trailingAnchor()),
-            list_height.clone(),
+            scroll_height.clone(),
             rule.topAnchor()
                 .constraintEqualToAnchor(&scroll.bottomAnchor()),
             rule.leadingAnchor()
@@ -508,9 +736,22 @@ impl Panel {
             proxy,
             window,
             root,
+            document,
             list,
-            list_height,
+            settings,
+            style_control,
+            rows,
+            badges: Status::ALL
+                .iter()
+                .map(|&st| template_image(images::status_png(st)))
+                .collect(),
+            scroll_height,
+            list_bottom,
+            settings_bottom,
             settings_button,
+            gear: symbol("gearshape", "Settings"),
+            back: symbol("chevron.backward", "Back to the list"),
+            showing_settings: false,
             _target: target,
             anchor: None,
             watchers: None,
@@ -521,7 +762,8 @@ impl Panel {
         self.window.isVisible()
     }
 
-    /// Replaces the list. Done while closed too, so the panel opens on the latest.
+    /// Replaces the list. Done while closed too, so the panel opens on the latest. The
+    /// caller refits the panel once it has updated everything (`fit`).
     pub fn set_content(&mut self, content: &PanelContent) {
         for view in self.list.arrangedSubviews().iter() {
             view.removeFromSuperview();
@@ -548,8 +790,90 @@ impl Panel {
                 }
             }
         }
-        if self.is_shown() {
-            self.resize();
+    }
+
+    /// Rewrites the settings view in place, so a control with the keyboard keeps it.
+    pub fn set_settings(&mut self, view: &SettingsView) {
+        self.style_control.setSelectedSegment(match view.style {
+            Style::Simple => 0,
+            Style::Full => 1,
+        });
+        for (views, row) in self.rows.iter().zip(&view.priority) {
+            // A status's place in `Status::ALL`: the buttons' tag and its badge.
+            let i = Status::ALL
+                .iter()
+                .position(|&s| s == row.status)
+                .expect("ALL holds every status");
+            views
+                .rank
+                .setStringValue(&NSString::from_str(&format!("{}.", row.rank)));
+            views.badge.setImage(Some(&self.badges[i]));
+            views
+                .name
+                .setStringValue(&NSString::from_str(row.status.as_str()));
+            views.note.setHidden(row.reported);
+            views.up.setTag(i as isize);
+            views.down.setTag(i as isize);
+            views.up.setEnabled(row.can_move_up);
+            views.down.setEnabled(row.can_move_down);
+        }
+    }
+
+    /// After a move made from the keyboard, gives the keyboard to the button that keeps
+    /// moving the same status (`ui::focus_after_move`).
+    pub fn focus_move_button(&self, row: usize, dir: Dir) {
+        if !self.is_shown() || !self.showing_settings {
+            return;
+        }
+        let Some(views) = self.rows.get(row) else {
+            return;
+        };
+        let button: &NSResponder = match dir {
+            Dir::Up => &views.up,
+            Dir::Down => &views.down,
+        };
+        self.window.makeFirstResponder(Some(button));
+    }
+
+    /// ⚙ switches between the list and the settings view.
+    pub fn toggle_settings(&mut self) {
+        if !self.is_shown() {
+            return;
+        }
+        self.showing_settings = !self.showing_settings;
+        self.apply_view();
+        self.document.scrollPoint(NSPoint::new(0.0, 0.0));
+        self.fit();
+    }
+
+    /// Shows the view `showing_settings` names, and the ⚙ button as what pressing it does:
+    /// a gear to open the settings, or a way back to the list.
+    fn apply_view(&self) {
+        self.list.setHidden(self.showing_settings);
+        self.settings.setHidden(!self.showing_settings);
+        // Off before on, so the two never hold the document at once.
+        let (off, on) = if self.showing_settings {
+            (&self.list_bottom, &self.settings_bottom)
+        } else {
+            (&self.settings_bottom, &self.list_bottom)
+        };
+        off.setActive(false);
+        on.setActive(true);
+        let (image, title) = if self.showing_settings {
+            (&self.back, "Back")
+        } else {
+            (&self.gear, "Settings")
+        };
+        // Text where the symbol can't be loaded, as `symbol_button` does.
+        match image {
+            Some(image) => {
+                self.settings_button.setTitle(&NSString::from_str(""));
+                self.settings_button.setImage(Some(image));
+            }
+            None => {
+                self.settings_button.setImage(None);
+                self.settings_button.setTitle(&NSString::from_str(title));
+            }
         }
     }
 
@@ -562,14 +886,19 @@ impl Panel {
         Some((rect(bar.frame()), rect(screen.visibleFrame())))
     }
 
-    /// Fits the list to its content, up to the limit, and the window to both, hanging
-    /// from the icon.
-    fn resize(&self) {
+    /// Fits the scroll view to the view on show, up to the limit, and the window to both,
+    /// hanging from the icon. Nothing to fit to until the panel has an icon to hang from.
+    pub fn fit(&self) {
         let Some((icon, visible)) = self.placement() else {
             return;
         };
-        let content = self.list.fittingSize().height;
-        self.list_height
+        let shown = if self.showing_settings {
+            &self.settings
+        } else {
+            &self.list
+        };
+        let content = shown.fittingSize().height;
+        self.scroll_height
             .setConstant(content.min(visible.height * MAX_SCREEN_SHARE));
         self.root.layoutSubtreeIfNeeded();
         let f = ui::panel_frame(icon, WIDTH, self.root.fittingSize().height, visible);
@@ -591,7 +920,10 @@ impl Panel {
             return;
         };
         self.anchor = Some(button);
-        self.resize();
+        // Always opens on the list.
+        self.showing_settings = false;
+        self.apply_view();
+        self.fit();
         self.window.makeKeyAndOrderFront(None);
         self.keep_highlight();
         self.watch(&bar);
@@ -600,7 +932,7 @@ impl Panel {
     /// The icon moved or changed width while open: hang from it again.
     pub fn follow_anchor(&self) {
         if self.is_shown() {
-            self.resize();
+            self.fit();
         }
     }
 
@@ -617,23 +949,12 @@ impl Panel {
         if let Some(button) = self.anchor.take() {
             button.highlight(false);
         }
+        self.showing_settings = false;
+        self.apply_view();
         if !self.is_shown() {
             return;
         }
         self.window.orderOut(None);
-    }
-
-    /// Pops the ⚙ menu up under its button. Returns once the menu closes.
-    pub fn show_settings_menu(&self, menu: &tray_icon::menu::Menu) {
-        use tray_icon::menu::{dpi::LogicalPosition, ContextMenu};
-        let view: &NSView = &self.settings_button;
-        // muda assumes an unflipped view; NSButton is flipped, so 0 lands on its bottom edge.
-        unsafe {
-            menu.show_context_menu_for_nsview(
-                (view as *const NSView).cast(),
-                Some(LogicalPosition::new(0.0, 0.0).into()),
-            );
-        }
     }
 
     fn watch(&mut self, bar: &NSWindow) {

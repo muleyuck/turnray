@@ -28,13 +28,14 @@ A Cargo workspace with two crates:
   priority order (`priority.rs`), settings parsing (`settings.rs`), herdr's JSON
   (`herdr.rs`) and the `DataSource` trait (`source.rs`)
 - `crates/tray-app` — the macOS app:
-  - `ui.rs` works out what to show (`TrayView`, `PanelContent`, `SettingsMenu`) from the
+  - `ui.rs` works out what to show (`TrayView`, `PanelContent`, `SettingsView`) from the
     state alone, so it is tested without a menu bar or a panel. Put display decisions here,
     not in `menu.rs` or `panel.rs`
   - `menu.rs` holds the app's state (`App`): applies it to the tray item and the panel,
-    sending only what changed, and builds the ⚙ button's menu
+    sending only what changed, and applies the settings view's changes
   - `panel.rs` lays out the panel (a borderless `NSPanel` hung under the tray icon, AppKit
-    through objc2) from `PanelContent`, and opens and closes it
+    through objc2): the list from `PanelContent` and the settings view from `SettingsView`,
+    switched by ⚙, and opens and closes it
   - `images.rs` decodes the embedded PNGs and composes the Full style's image at runtime
   - `herdr.rs` finds and runs the `herdr` executable (login-shell fallback); `process.rs`
     runs a child with a deadline, a cap on its output and a process-group kill

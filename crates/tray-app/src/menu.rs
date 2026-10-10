@@ -1,60 +1,8 @@
-use std::collections::HashMap;
-
 use agent_core::{Agent, Settings, SourceError, Status, Style};
-use tray_icon::menu::{CheckMenuItem, Menu, MenuId, MenuItem, Submenu};
 use tray_icon::TrayIcon;
 
 use crate::panel::Panel;
-use crate::ui::{self, DisplayState, PanelContent, PriorityRow, SettingsMenu, TrayImage, TrayView};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MenuAction {
-    SetStyle(Style),
-    MoveUp(Status),
-    MoveDown(Status),
-}
-
-fn style_submenu(current: Style, actions: &mut HashMap<MenuId, MenuAction>) -> Submenu {
-    let submenu = Submenu::new("Style", true);
-    for (style, label) in [(Style::Simple, "Simple"), (Style::Full, "Full")] {
-        let item = CheckMenuItem::new(label, true, style == current, None);
-        actions.insert(item.id().clone(), MenuAction::SetStyle(style));
-        submenu.append(&item).expect("menu append");
-    }
-    submenu
-}
-
-fn priority_submenu(rows: &[PriorityRow], actions: &mut HashMap<MenuId, MenuAction>) -> Submenu {
-    let submenu = Submenu::new("Priority", true);
-    for row in rows {
-        let entry = Submenu::new(&row.label, true);
-        for (label, enabled, action) in [
-            ("Move Up", row.can_move_up, MenuAction::MoveUp(row.status)),
-            (
-                "Move Down",
-                row.can_move_down,
-                MenuAction::MoveDown(row.status),
-            ),
-        ] {
-            let item = MenuItem::new(label, enabled, None);
-            actions.insert(item.id().clone(), action);
-            entry.append(&item).expect("menu append");
-        }
-        submenu.append(&entry).expect("menu append");
-    }
-    submenu
-}
-
-/// The ⚙ button's menu.
-pub fn build_settings_menu(model: &SettingsMenu) -> (Menu, HashMap<MenuId, MenuAction>) {
-    let menu = Menu::new();
-    let mut actions = HashMap::new();
-    menu.append(&style_submenu(model.style, &mut actions))
-        .expect("menu append");
-    menu.append(&priority_submenu(&model.priority, &mut actions))
-        .expect("menu append");
-    (menu, actions)
-}
+use crate::ui::{self, Dir, DisplayState, PanelContent, SettingsView, TrayImage, TrayView};
 
 pub struct App {
     tray: Option<TrayIcon>,
@@ -64,11 +12,9 @@ pub struct App {
     /// What the tray was last given, so nothing is re-sent every second.
     last_view: Option<TrayView>,
     panel: Option<Panel>,
-    /// What the panel was last given.
+    /// What the panel's list and settings view were last given.
     last_content: Option<PanelContent>,
-    /// The ⚙ menu last shown, kept until the next replaces it: muda's items point into it.
-    settings_menu: Option<Menu>,
-    actions: HashMap<MenuId, MenuAction>,
+    last_settings: Option<SettingsView>,
 }
 
 impl App {
@@ -81,8 +27,7 @@ impl App {
             last_view: None,
             panel: None,
             last_content: None,
-            settings_menu: None,
-            actions: HashMap::new(),
+            last_settings: None,
         }
     }
 
@@ -111,12 +56,28 @@ impl App {
         if last.map(|l| &l.title) != Some(&view.title) {
             tray.set_title(Some(&view.title));
         }
+        // Each view is rebuilt only on a change, and the panel refitted once after.
+        let mut changed = false;
         let content = ui::panel_model(&self.state, &self.settings);
         if self.last_content.as_ref() != Some(&content) {
             if let Some(panel) = self.panel.as_mut() {
                 panel.set_content(&content);
             }
             self.last_content = Some(content);
+            changed = true;
+        }
+        let settings = ui::settings_model(&self.settings, self.emitted);
+        if self.last_settings.as_ref() != Some(&settings) {
+            if let Some(panel) = self.panel.as_mut() {
+                panel.set_settings(&settings);
+            }
+            self.last_settings = Some(settings);
+            changed = true;
+        }
+        if changed {
+            if let Some(panel) = self.panel.as_ref() {
+                panel.fit();
+            }
         }
         if last.map(|l| l.visible) != Some(view.visible) {
             tray.set_visible(view.visible).expect("tray visibility");
@@ -151,18 +112,36 @@ impl App {
         self.refresh();
     }
 
-    /// An id from an older menu does nothing.
-    pub fn on_menu_event(&mut self, id: &MenuId) {
-        let Some(action) = self.actions.get(id).copied() else {
-            return;
-        };
-        match action {
-            MenuAction::SetStyle(style) => self.settings.style = style,
-            MenuAction::MoveUp(status) => self.settings.priority.move_up(status),
-            MenuAction::MoveDown(status) => self.settings.priority.move_down(status),
-        }
+    fn save_and_refresh(&mut self) {
         crate::store::save(&self.settings);
         self.refresh();
+    }
+
+    pub fn set_style(&mut self, style: Style) {
+        // Picking the selected segment again sends it too; nothing to save.
+        if self.settings.style == style {
+            return;
+        }
+        self.settings.style = style;
+        self.save_and_refresh();
+    }
+
+    /// `keyboard`: the button had the keyboard focus, which then follows the status so
+    /// pressing on keeps moving it.
+    pub fn move_status(&mut self, status: Status, dir: Dir, keyboard: bool) {
+        match dir {
+            Dir::Up => self.settings.priority.move_up(status),
+            Dir::Down => self.settings.priority.move_down(status),
+        }
+        self.save_and_refresh();
+        if !keyboard {
+            return;
+        }
+        let rows = ui::priority_rows(&self.settings, self.emitted);
+        let (row, dir) = ui::focus_after_move(&rows, status, dir);
+        if let Some(panel) = self.panel.as_ref() {
+            panel.focus_move_button(row, dir);
+        }
     }
 
     /// Opens or closes the panel on the press; the release only keeps the icon pressed.
@@ -181,20 +160,11 @@ impl App {
         }
     }
 
-    /// Built afresh each time, so a check item macOS flipped on its last click is redrawn
-    /// from the settings.
+    /// Switches the panel between the list and the settings view.
     pub fn on_settings(&mut self) {
-        let Some(panel) = self.panel.as_ref() else {
-            return;
-        };
-        if !panel.is_shown() {
-            return;
+        if let Some(panel) = self.panel.as_mut() {
+            panel.toggle_settings();
         }
-        let (menu, actions) =
-            build_settings_menu(&ui::settings_model(&self.settings, self.emitted));
-        self.actions = actions;
-        panel.show_settings_menu(&menu);
-        self.settings_menu = Some(menu);
     }
 
     pub fn follow_anchor(&self) {
