@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.2.0](https://github.com/muleyuck/turnray/compare/v0.1.1...v0.2.0) (2026-10-10)
+
+
+### Features
+
+* hang the panel from the icon's left edge, without an arrow ([772d891](https://github.com/muleyuck/turnray/commit/772d89133523ea1a12e32c35a21eba18ba45fac5))
+* reorder priority in a settings view inside the panel ([22e5d79](https://github.com/muleyuck/turnray/commit/22e5d79917fd72b98bd97171022e25cfc72bbdf7))
+* show the agent list in a display-only panel instead of a menu ([66013cf](https://github.com/muleyuck/turnray/commit/66013cf4a978d8c43b7391124dc3bdc4aa4017cf))
+* work out the panel's and the settings menu's content in ui.rs ([701af1a](https://github.com/muleyuck/turnray/commit/701af1ad9f5853382f58655ec7137fd194fa7992))
+
+
+### Bug Fixes
+
+* draw the working badge as a progress ring so it reads as in progress ([47273b6](https://github.com/muleyuck/turnray/commit/47273b609b62d52570500e2e39e7b97fca660f7f))
+* open the panel without bringing turnray to the front ([4786fb4](https://github.com/muleyuck/turnray/commit/4786fb4eceb14632af53a52e146e297db7bed763))
+* show a back arrow on the settings view, and widen the arrows' targets ([109d7fe](https://github.com/muleyuck/turnray/commit/109d7fea7f5ace13a7f795f4afa4b4cd71f62f36))
+
 ## [0.1.1](https://github.com/muleyuck/turnray/compare/v0.1.0...v0.1.1) (2026-10-07)
 
 
