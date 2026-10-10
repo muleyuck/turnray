@@ -38,6 +38,10 @@ const INSET: f64 = 12.0;
 /// How far a card sits in from its group's header.
 const CARD_INDENT: f64 = 26.0;
 const ICON_SIZE: f64 = 18.0;
+/// A priority row's ↑ and ↓ buttons.
+const ARROW_WIDTH: f64 = 22.0;
+/// The ⚙ button, held while it swaps to the back arrow, which is narrower.
+const SETTINGS_BUTTON_WIDTH: f64 = 40.0;
 /// The scrolled part never takes more of the screen than this, so the buttons stay on it.
 const MAX_SCREEN_SHARE: f64 = 0.6;
 const ESCAPE_KEY_CODE: u16 = 53;
@@ -264,7 +268,7 @@ pub struct Panel {
     list_bottom: Retained<NSLayoutConstraint>,
     settings_bottom: Retained<NSLayoutConstraint>,
     settings_button: Retained<NSButton>,
-    /// What the ⚙ button shows: a gear on the list, a way back on the settings view.
+    /// What the ⚙ button shows: a gear on the list, a way back to it on the settings view.
     gear: Option<Retained<NSImage>>,
     back: Option<Retained<NSImage>>,
     showing_settings: bool,
@@ -510,9 +514,15 @@ fn priority_row(
             NSLayoutConstraintOrientation::Horizontal,
         );
     }
-    // No bezel, so a row is as tall as its badge, like a group header in the list.
-    views.up.setBordered(false);
-    views.down.setBordered(false);
+    // No bezel, so a row is as tall as its badge, like a group header in the list. A bare
+    // chevron is only 16×9pt, so each button is held to a badge-high target to click.
+    for button in [&views.up, &views.down] {
+        button.setBordered(false);
+        activate(&[
+            button.widthAnchor().constraintEqualToConstant(ARROW_WIDTH),
+            button.heightAnchor().constraintEqualToConstant(ICON_SIZE),
+        ]);
+    }
     let row = NSStackView::new(mtm);
     row.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
     row.setSpacing(6.0);
@@ -696,6 +706,9 @@ impl Panel {
                 .trailingAnchor()
                 .constraintEqualToAnchor(&root.trailingAnchor()),
             scroll_height.clone(),
+            settings_button
+                .widthAnchor()
+                .constraintEqualToConstant(SETTINGS_BUTTON_WIDTH),
             rule.topAnchor()
                 .constraintEqualToAnchor(&scroll.bottomAnchor()),
             rule.leadingAnchor()
@@ -847,7 +860,7 @@ impl Panel {
     }
 
     /// Shows the view `showing_settings` names, and the ⚙ button as what pressing it does:
-    /// a gear to open the settings, or a way back to the list.
+    /// a gear to open the settings, or a back arrow to the list. The tooltip says which.
     fn apply_view(&self) {
         self.list.setHidden(self.showing_settings);
         self.settings.setHidden(!self.showing_settings);
@@ -859,20 +872,22 @@ impl Panel {
         };
         off.setActive(false);
         on.setActive(true);
-        let (image, title) = if self.showing_settings {
-            (&self.back, "Back")
+        let button = &self.settings_button;
+        let (image, fallback, tip) = if self.showing_settings {
+            (&self.back, "Back", "Back to the list")
         } else {
-            (&self.gear, "Settings")
+            (&self.gear, "Settings", "Settings")
         };
+        button.setToolTip(Some(&NSString::from_str(tip)));
         // Text where the symbol can't be loaded, as `symbol_button` does.
         match image {
             Some(image) => {
-                self.settings_button.setTitle(&NSString::from_str(""));
-                self.settings_button.setImage(Some(image));
+                button.setTitle(&NSString::from_str(""));
+                button.setImage(Some(image));
             }
             None => {
-                self.settings_button.setImage(None);
-                self.settings_button.setTitle(&NSString::from_str(title));
+                button.setImage(None);
+                button.setTitle(&NSString::from_str(fallback));
             }
         }
     }
