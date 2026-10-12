@@ -52,41 +52,12 @@ jobs:
         run: gh release upload "$TAG_NAME" "target/turnray-${VERSION}.zip" --clobber --repo "$GITHUB_REPOSITORY"
 
       # Only after the zip is attached, so the Cask never points at a missing file.
-      - name: Render the Cask
-        run: |
-          sha=$(shasum -a 256 "target/turnray-${VERSION}.zip" | cut -d' ' -f1)
-          mkdir -p "$RUNNER_TEMP/Casks"
-          sed -e "s/@VERSION@/${VERSION}/" -e "s/@SHA256@/${sha}/" packaging/turnray.rb.in \
-            > "$RUNNER_TEMP/Casks/turnray.rb"
-          brew style "$RUNNER_TEMP/Casks/turnray.rb"
-
-      - name: Get a token for the tap
-        id: tap-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+      - name: Publish the Cask
+        uses: muleyuck/github-actions/actions/homebrew/publish@v1
         with:
+          template: packaging/turnray.rb.in
+          tap-path: Casks/turnray.rb
+          version: ${{ env.VERSION }}
+          sha256: SHA256=target/turnray-${{ env.VERSION }}.zip
           client-id: ${{ secrets.TAP_APP_CLIENT_ID }}
           private-key: ${{ secrets.TAP_APP_PRIVATE_KEY }}
-          owner: muleyuck
-          repositories: homebrew-tap
-          permission-contents: write
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: muleyuck/homebrew-tap
-          token: ${{ steps.tap-token.outputs.token }}
-          path: tap
-
-      - name: Publish the Cask
-        working-directory: tap
-        run: |
-          mkdir -p Casks
-          cp "$RUNNER_TEMP/Casks/turnray.rb" Casks/turnray.rb
-          git add Casks/turnray.rb
-          if git diff --cached --quiet; then
-            echo "Cask already up to date"
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git commit -m "turnray ${VERSION}"
-          git push
