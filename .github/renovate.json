@@ -25,6 +25,6 @@
 
     { "matchManagers": ["mise"], "matchDepNames": ["prek"], "matchUpdateTypes": ["patch", "minor"], "automerge": true },
 
-    { "matchUpdateTypes": ["lockFileMaintenance"], "automerge": false }
+    { "matchUpdateTypes": ["lockFileMaintenance"], "automerge": false, "minimumReleaseAge": null }
   ]
 }
