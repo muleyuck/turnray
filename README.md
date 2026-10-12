@@ -7,11 +7,9 @@
   <b>See whose turn it is — your AI agents' status, right in the macOS menu bar.</b>
 </p>
 
-<!-- Screenshot: the menu bar icon with the panel open (docs/images/overview.png)
 <p align="center">
-  <img src="docs/images/overview.png" alt="turnray in the menu bar with its panel open" width="480">
+  <img src="docs/images/overview.png" alt="turnray in the menu bar with its panel open" width="320">
 </p>
--->
 
 turnray watches the AI agents running under herdr and tells you, from the menu bar, which
 ones are waiting for you — without changing your terminal layout. The name is *turn*
@@ -80,11 +78,9 @@ Choose between two styles in the panel's settings:
 | **Simple** | the most urgent status's badge and its count only               |
 | **Full**   | every status that has an agent, each as badge + count, in order |
 
-<!-- Screenshots: one per style (docs/images/style-simple.png, docs/images/style-full.png)
 | Simple | Full |
 | :----: | :--: |
 | <img src="docs/images/style-simple.png" alt="Simple style" height="44"> | <img src="docs/images/style-full.png" alt="Full style" height="44"> |
--->
 
 ### The panel
 
@@ -106,11 +102,7 @@ Press ⚙ at the bottom of the panel to switch it to its settings, where you can
 
 Settings are saved to `~/Library/Application Support/turnray/settings`.
 
-<!-- Screenshot: the settings view (docs/images/settings.png)
-<p align="center">
-  <img src="docs/images/settings.png" alt="The settings view" width="400">
-</p>
--->
+<img src="docs/images/settings.png" alt="The settings view" width="312">
 
 ## How turnray finds herdr
 
