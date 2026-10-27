@@ -9,6 +9,8 @@ pub struct App {
     state: DisplayState,
     settings: Settings,
     emitted: &'static [Status],
+    /// Read from macOS, not saved: System Settings can switch it off behind the app's back.
+    launch_at_login: Option<bool>,
     /// What the tray was last given, so nothing is re-sent every second.
     last_view: Option<TrayView>,
     panel: Option<Panel>,
@@ -24,6 +26,7 @@ impl App {
             state: DisplayState::BeforeFirstFetch,
             settings,
             emitted,
+            launch_at_login: crate::login::enabled(),
             last_view: None,
             panel: None,
             last_content: None,
@@ -66,7 +69,7 @@ impl App {
             self.last_content = Some(content);
             changed = true;
         }
-        let settings = ui::settings_model(&self.settings, self.emitted);
+        let settings = ui::settings_model(&self.settings, self.emitted, self.launch_at_login);
         if self.last_settings.as_ref() != Some(&settings) {
             if let Some(panel) = self.panel.as_mut() {
                 panel.set_settings(&settings);
@@ -126,6 +129,15 @@ impl App {
         self.save_and_refresh();
     }
 
+    pub fn set_launch_at_login(&mut self, on: bool) {
+        crate::login::set(on);
+        self.launch_at_login = crate::login::enabled();
+        // The checkbox flipped itself on the click; a failure must turn it back, though
+        // the view may not have changed.
+        self.last_settings = None;
+        self.refresh();
+    }
+
     /// `keyboard`: the button had the keyboard focus, which then follows the status so
     /// pressing on keeps moving it.
     pub fn move_status(&mut self, status: Status, dir: Dir, keyboard: bool) {
@@ -162,6 +174,8 @@ impl App {
 
     /// Switches the panel between the list and the settings view.
     pub fn on_settings(&mut self) {
+        self.launch_at_login = crate::login::enabled();
+        self.refresh();
         if let Some(panel) = self.panel.as_mut() {
             panel.toggle_settings();
         }

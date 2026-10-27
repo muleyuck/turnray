@@ -41,6 +41,8 @@ A Cargo workspace with two crates:
     runs a child with a deadline, a cap on its output and a process-group kill
   - `backend.rs` polls the source every second; `store.rs` saves the settings to
     `~/Library/Application Support/turnray/settings`
+  - `login.rs` turns launch at login on and off through `SMAppService` (macOS 13+, and
+    only from the `.app`); macOS keeps that setting, not `store.rs`
 
 ## Icons
 
