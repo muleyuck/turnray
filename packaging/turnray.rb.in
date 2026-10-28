@@ -22,7 +22,8 @@ cask "turnray" do
     turnray shows agents from herdr, so herdr must be installed and running
     (for example: brew install herdr).
 
-    To start turnray at login, add it in
-    System Settings > General > Login Items.
+    To start turnray at login, check Launch at login in its settings (⚙).
+    On macOS 12 and earlier, add it in
+    System Settings > General > Login Items instead.
   EOS
 end

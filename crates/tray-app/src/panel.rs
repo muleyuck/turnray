@@ -12,15 +12,16 @@ use objc2::{
     define_class, msg_send, sel, AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly,
 };
 use objc2_app_kit::{
-    NSBackingStoreType, NSBox, NSBoxType, NSButton, NSColor, NSEvent, NSEventMask, NSFont, NSImage,
-    NSImageView, NSLayoutAttribute, NSLayoutConstraint, NSLayoutConstraintOrientation,
-    NSLayoutPriorityDefaultHigh, NSLayoutPriorityDefaultLow, NSLineBreakMode, NSPanel,
-    NSPopUpMenuWindowLevel, NSResponder, NSScreen, NSScrollView, NSSegmentSwitchTracking,
-    NSSegmentedControl, NSStackView, NSStackViewGravity, NSStatusBarButton, NSStatusItem,
-    NSTextAlignment, NSTextField, NSUserInterfaceLayoutOrientation, NSView,
-    NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView,
-    NSWindow, NSWindowCollectionBehavior, NSWindowDidMoveNotification,
-    NSWindowDidResignKeyNotification, NSWindowDidResizeNotification, NSWindowStyleMask,
+    NSBackingStoreType, NSBox, NSBoxType, NSButton, NSColor, NSControlStateValueOff,
+    NSControlStateValueOn, NSEvent, NSEventMask, NSFont, NSImage, NSImageView, NSLayoutAttribute,
+    NSLayoutConstraint, NSLayoutConstraintOrientation, NSLayoutPriorityDefaultHigh,
+    NSLayoutPriorityDefaultLow, NSLineBreakMode, NSPanel, NSPopUpMenuWindowLevel, NSResponder,
+    NSScreen, NSScrollView, NSSegmentSwitchTracking, NSSegmentedControl, NSStackView,
+    NSStackViewGravity, NSStatusBarButton, NSStatusItem, NSTextAlignment, NSTextField,
+    NSUserInterfaceLayoutOrientation, NSView, NSVisualEffectBlendingMode, NSVisualEffectMaterial,
+    NSVisualEffectState, NSVisualEffectView, NSWindow, NSWindowCollectionBehavior,
+    NSWindowDidMoveNotification, NSWindowDidResignKeyNotification, NSWindowDidResizeNotification,
+    NSWindowStyleMask,
 };
 use objc2_foundation::{
     NSArray, NSData, NSEdgeInsets, NSNotification, NSNotificationCenter, NSObject, NSPoint, NSRect,
@@ -80,6 +81,15 @@ define_class!(
                 _ => return,
             };
             let _ = self.ivars().proxy.send_event(UserEvent::SetStyle(style));
+        }
+
+        #[unsafe(method(launchAtLogin:))]
+        fn launch_at_login(&self, sender: Option<&NSButton>) {
+            let Some(sender) = sender else {
+                return;
+            };
+            let on = sender.state() == NSControlStateValueOn;
+            let _ = self.ivars().proxy.send_event(UserEvent::SetLaunchAtLogin(on));
         }
 
         #[unsafe(method(moveUp:))]
@@ -260,6 +270,7 @@ pub struct Panel {
     settings: Retained<NSStackView>,
     style_control: Retained<NSSegmentedControl>,
     rows: Vec<PriorityRowViews>,
+    login: LoginViews,
     /// One badge per status, in `Status::ALL` order, decoded once.
     badges: Vec<Retained<NSImage>>,
     /// Holds the scroll view to the shown view's height, up to the screen share.
@@ -536,7 +547,14 @@ fn priority_row(
     (row, views)
 }
 
-/// The settings view, built once: Style, then the five priority rows.
+/// The Launch at login checkbox and the rule above it, hidden together where it can't
+/// be set.
+struct LoginViews {
+    rule: Retained<NSBox>,
+    checkbox: Retained<NSButton>,
+}
+
+/// The settings view, built once: Style, the five priority rows, then Launch at login.
 fn settings_view(
     target: &Target,
     mtm: MainThreadMarker,
@@ -544,6 +562,7 @@ fn settings_view(
     Retained<NSStackView>,
     Retained<NSSegmentedControl>,
     Vec<PriorityRowViews>,
+    LoginViews,
 ) {
     let settings = NSStackView::new(mtm);
     settings.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
@@ -580,7 +599,21 @@ fn settings_view(
         fill_width(&row, &settings, 0.0);
         rows.push(views);
     }
-    (settings, style_control, rows)
+    let login = LoginViews {
+        rule: separator(mtm),
+        checkbox: unsafe {
+            NSButton::checkboxWithTitle_target_action(
+                &NSString::from_str("Launch at login"),
+                Some(target),
+                Some(sel!(launchAtLogin:)),
+                mtm,
+            )
+        },
+    };
+    settings.addArrangedSubview(&login.rule);
+    fill_width(&login.rule, &settings, 0.0);
+    settings.addArrangedSubview(&login.checkbox);
+    (settings, style_control, rows, login)
 }
 
 impl Panel {
@@ -598,7 +631,7 @@ impl Panel {
             right: INSET,
         });
         list.setTranslatesAutoresizingMaskIntoConstraints(false);
-        let (settings, style_control, rows) = settings_view(&target, mtm);
+        let (settings, style_control, rows, login) = settings_view(&target, mtm);
         settings.setHidden(true);
 
         // The list and the settings view, one shown at a time, both kept in the document
@@ -754,6 +787,7 @@ impl Panel {
             settings,
             style_control,
             rows,
+            login,
             badges: Status::ALL
                 .iter()
                 .map(|&st| template_image(images::status_png(st)))
@@ -830,6 +864,17 @@ impl Panel {
             views.up.setEnabled(row.can_move_up);
             views.down.setEnabled(row.can_move_down);
         }
+        self.login.rule.setHidden(view.launch_at_login.is_none());
+        self.login
+            .checkbox
+            .setHidden(view.launch_at_login.is_none());
+        self.login
+            .checkbox
+            .setState(if view.launch_at_login == Some(true) {
+                NSControlStateValueOn
+            } else {
+                NSControlStateValueOff
+            });
     }
 
     /// After a move made from the keyboard, gives the keyboard to the button that keeps

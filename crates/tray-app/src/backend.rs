@@ -19,6 +19,8 @@ pub enum UserEvent {
     Settings,
     /// The settings view's Style control
     SetStyle(Style),
+    /// The settings view's Launch at login checkbox
+    SetLaunchAtLogin(bool),
     /// A priority row's ↑ or ↓; `keyboard` when the button had the keyboard focus
     Move {
         status: Status,

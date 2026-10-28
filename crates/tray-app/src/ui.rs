@@ -120,6 +120,8 @@ pub struct AgentCard {
 pub struct SettingsView {
     pub style: Style,
     pub priority: Vec<PriorityRow>,
+    /// Whether the app starts at login; `None` hides the checkbox, where it can't be set
+    pub launch_at_login: Option<bool>,
 }
 
 /// A rectangle in screen points, with AppKit's bottom-left origin.
@@ -249,10 +251,15 @@ pub fn panel_model(state: &DisplayState, settings: &Settings) -> PanelContent {
     }
 }
 
-pub fn settings_model(settings: &Settings, emitted: &[Status]) -> SettingsView {
+pub fn settings_model(
+    settings: &Settings,
+    emitted: &[Status],
+    launch_at_login: Option<bool>,
+) -> SettingsView {
     SettingsView {
         style: settings.style,
         priority: priority_rows(settings, emitted),
+        launch_at_login,
     }
 }
 
@@ -627,7 +634,7 @@ mod tests {
 
     #[test]
     fn the_settings_view_carries_the_style_and_all_five_priorities() {
-        let m = settings_model(&settings(Style::Full), &Status::ALL);
+        let m = settings_model(&settings(Style::Full), &Status::ALL, None);
         assert_eq!(m.style, Style::Full);
         assert_eq!(
             m.priority,
@@ -642,10 +649,18 @@ mod tests {
     }
 
     #[test]
+    fn the_settings_view_carries_launch_at_login_as_given() {
+        for given in [None, Some(false), Some(true)] {
+            let m = settings_model(&settings(Style::Simple), &Status::ALL, given);
+            assert_eq!(m.launch_at_login, given);
+        }
+    }
+
+    #[test]
     fn the_settings_view_follows_a_changed_priority() {
         let mut s = settings(Style::Simple);
         s.priority = Priority::parse("working,idle,blocked,done,unknown").unwrap();
-        let order: Vec<Status> = settings_model(&s, &Status::ALL)
+        let order: Vec<Status> = settings_model(&s, &Status::ALL, None)
             .priority
             .iter()
             .map(|r| r.status)

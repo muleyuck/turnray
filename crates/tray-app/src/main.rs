@@ -1,6 +1,7 @@
 mod backend;
 mod herdr;
 mod images;
+mod login;
 mod menu;
 mod panel;
 mod process;
@@ -83,6 +84,7 @@ fn main() {
             Event::UserEvent(UserEvent::TrayClick { pressed }) => app.on_tray_click(pressed),
             Event::UserEvent(UserEvent::Settings) => app.on_settings(),
             Event::UserEvent(UserEvent::SetStyle(style)) => app.set_style(style),
+            Event::UserEvent(UserEvent::SetLaunchAtLogin(on)) => app.set_launch_at_login(on),
             Event::UserEvent(UserEvent::Move {
                 status,
                 dir,

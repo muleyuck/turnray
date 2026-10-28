@@ -49,7 +49,8 @@ brew install --cask muleyuck/tap/turnray
    xattr -dr com.apple.quarantine /Applications/turnray.app
    ```
 
-To start turnray at login, add it in **System Settings > General > Login Items**.
+To start turnray at login, check **Launch at login** in the panel's [settings](#settings).
+On macOS 12 and earlier, add it in **System Settings > General > Login Items** instead.
 
 ## Usage
 
@@ -99,6 +100,9 @@ Press ⚙ at the bottom of the panel to switch it to its settings, where you can
 - Reorder the priority with each status's ↑ and ↓. The default is
   blocked → done → idle → working → unknown. The menu bar and the list share this order,
   so the icon on show is always the head of the list
+- Start turnray at login (**Launch at login**, macOS 13 or later). This one is not saved
+  with the others: macOS keeps it, and it shows up in **System Settings > General > Login
+  Items**
 
 Settings are saved to `~/Library/Application Support/turnray/settings`.
 
