@@ -10,7 +10,7 @@ path = "src/main.rs"
 [dependencies]
 agent-core = { path = "../agent-core" }
 png = "0.18.1"
-tao = "0.35.3"
+tao = "0.37.0"
 tokio = { version = "1.53.0", features = ["rt", "time"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
