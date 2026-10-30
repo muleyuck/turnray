@@ -1,13 +1,16 @@
 //! The hook side of the Claude Code source: `turnray hook claude` turns one hook event
 //! from stdin into a session file under `sessions_dir()`.
 
+use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use agent_core::hook::{decide, valid_session_id, Action, HookEvent, SessionRecord};
+use agent_core::hook::{decide, valid_session_id, Action, HookEvent, SessionRecord, EMITTED};
+use agent_core::{Agent, DataSource, SourceError, Status};
 
 use crate::process::output_with_timeout;
 
@@ -218,6 +221,183 @@ fn parse_ps_ancestor(line: &str) -> Option<(u32, String, String)> {
     let ppid = fields[0].parse().ok()?;
     let split = fields.len() - 5;
     Some((ppid, fields[1..split].join(" "), fields[split..].join(" ")))
+}
+
+/// A record with no owner (`claude` was not found among the hook's ancestors) can only
+/// age out.
+const NO_OWNER_TTL_MS: u64 = 24 * 60 * 60 * 1000;
+
+/// The app side of the Claude Code source: reads the session files the hook wrote and
+/// removes the ones whose `claude` is gone.
+// wired into main in the next task
+#[allow(dead_code)]
+pub struct HookSource {
+    dir: Option<PathBuf>,
+    /// File names already warned about, so a broken file is not logged every second.
+    warned: Mutex<HashSet<String>>,
+}
+
+pub enum Liveness {
+    /// pid to lstart, for the pids `ps` knew
+    Alive(HashMap<u32, String>),
+    Failed,
+}
+
+// wired into main in the next task
+#[allow(dead_code)]
+impl HookSource {
+    pub fn new() -> HookSource {
+        HookSource::with_dir(sessions_dir())
+    }
+
+    #[cfg(test)]
+    fn in_dir(dir: PathBuf) -> HookSource {
+        HookSource::with_dir(Some(dir))
+    }
+
+    fn with_dir(dir: Option<PathBuf>) -> HookSource {
+        HookSource {
+            dir,
+            warned: Mutex::new(HashSet::new()),
+        }
+    }
+
+    #[cfg(test)]
+    fn fetch_at(&self, now_ms: u64) -> Vec<Agent> {
+        self.fetch_with(now_ms, run_ps_liveness)
+    }
+
+    fn fetch_with(&self, now_ms: u64, liveness: impl FnOnce(&[u32]) -> Liveness) -> Vec<Agent> {
+        let Some(dir) = &self.dir else {
+            return vec![];
+        };
+        let records = self.read_records(dir);
+        let mut pids: Vec<u32> = records.iter().filter_map(|(_, r)| r.pid).collect();
+        pids.sort_unstable();
+        pids.dedup();
+        let alive = if pids.is_empty() {
+            None
+        } else {
+            match liveness(&pids) {
+                Liveness::Alive(map) => Some(map),
+                Liveness::Failed => None,
+            }
+        };
+        records
+            .into_iter()
+            .filter(|(path, r)| {
+                let dead = match r.pid {
+                    // Without a ps answer nothing owned by a pid can be told dead.
+                    Some(pid) => {
+                        alive
+                            .as_ref()
+                            .is_some_and(|map| match (map.get(&pid), &r.pid_start) {
+                                (None, _) => true,
+                                (Some(start), Some(recorded)) => start != recorded,
+                                (Some(_), None) => true,
+                            })
+                    }
+                    None => now_ms.saturating_sub(r.updated_at) > NO_OWNER_TTL_MS,
+                };
+                !(dead && remove_if_unchanged(path, r.updated_at))
+            })
+            .map(|(_, r)| r.to_agent())
+            .collect()
+    }
+
+    fn first_warning(&self, name: &str) -> bool {
+        self.warned
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(name.to_string())
+    }
+
+    fn read_records(&self, dir: &Path) -> Vec<(PathBuf, SessionRecord)> {
+        let Ok(read_dir) = std::fs::read_dir(dir) else {
+            return vec![];
+        };
+        let mut records = vec![];
+        for entry in read_dir.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.') || !name.ends_with(".json") {
+                continue;
+            }
+            let path = entry.path();
+            let parsed = std::fs::read_to_string(&path)
+                .map_err(|e| e.to_string())
+                .and_then(|text| SessionRecord::from_json(&text));
+            match parsed {
+                Ok(record) => records.push((path, record)),
+                Err(e) => {
+                    if self.first_warning(&name) {
+                        tracing::warn!("skipping session file {name}: {e}");
+                    }
+                }
+            }
+        }
+        records
+    }
+}
+
+// wired into main in the next task
+#[allow(dead_code)]
+impl DataSource for HookSource {
+    fn fetch(&self) -> Result<Vec<Agent>, SourceError> {
+        Ok(self.fetch_with(now_ms(), run_ps_liveness))
+    }
+
+    fn emitted_statuses(&self) -> &'static [Status] {
+        EMITTED
+    }
+}
+
+/// Removes the record only if it is still the one that was judged dead: a hook may have
+/// rewritten it since. Returns whether the record is gone. There is no lock, so a write
+/// landing between this read and the removal is lost (accepted, spec §6).
+fn remove_if_unchanged(path: &Path, updated_at: u64) -> bool {
+    let current = match std::fs::read_to_string(path) {
+        Ok(text) => SessionRecord::from_json(&text).ok().map(|r| r.updated_at),
+        Err(e) => return e.kind() == std::io::ErrorKind::NotFound,
+    };
+    current == Some(updated_at) && std::fs::remove_file(path).is_ok()
+}
+
+fn run_ps_liveness(pids: &[u32]) -> Liveness {
+    let list: Vec<String> = pids.iter().map(u32::to_string).collect();
+    let out = output_with_timeout(
+        Command::new("ps")
+            .env("LC_ALL", "C")
+            .args(["-o", "pid=,lstart=", "-p", &list.join(",")]),
+        PS_TIMEOUT,
+    );
+    match out {
+        Ok(out) => parse_liveness(
+            out.status.code().unwrap_or(-1),
+            &String::from_utf8_lossy(&out.stdout),
+            &String::from_utf8_lossy(&out.stderr),
+        ),
+        Err(_) => Liveness::Failed,
+    }
+}
+
+/// `ps -p` exits 0 when it knows at least one pid and 1 with no output when it knows none.
+fn parse_liveness(exit_code: i32, stdout: &str, stderr: &str) -> Liveness {
+    match exit_code {
+        0 => Liveness::Alive(
+            stdout
+                .lines()
+                .filter_map(|line| {
+                    let mut fields = line.split_whitespace();
+                    let pid = fields.next()?.parse().ok()?;
+                    Some((pid, fields.collect::<Vec<_>>().join(" ")))
+                })
+                .collect(),
+        ),
+        1 if stdout.trim().is_empty() && stderr.trim().is_empty() => {
+            Liveness::Alive(HashMap::new())
+        }
+        _ => Liveness::Failed,
+    }
 }
 
 #[cfg(test)]
@@ -567,5 +747,254 @@ mod tests {
         );
         assert_eq!(parse_ps_ancestor(""), None);
         assert_eq!(parse_ps_ancestor("   \n"), None);
+    }
+
+    fn put(dir: &Path, name: &str, r: &SessionRecord) {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join(name), r.to_json()).unwrap();
+    }
+
+    fn rec(updated_at: u64, pid: Option<u32>, pid_start: Option<&str>) -> SessionRecord {
+        SessionRecord {
+            status: Status::Working,
+            cwd: "/Users/x/proj".into(),
+            title: None,
+            updated_at,
+            pid,
+            pid_start: pid_start.map(Into::into),
+        }
+    }
+
+    fn source_with(t: &TempDir, records: &[(&str, SessionRecord)]) -> HookSource {
+        for (name, r) in records {
+            put(&t.path(), name, r);
+        }
+        HookSource::in_dir(t.path())
+    }
+
+    fn never_called(_: &[u32]) -> Liveness {
+        panic!("ps must not run")
+    }
+
+    #[test]
+    fn a_missing_directory_gives_no_agents() {
+        let t = TempDir::new("read-missing");
+        assert!(HookSource::in_dir(t.path())
+            .fetch_with(0, never_called)
+            .is_empty());
+    }
+
+    #[test]
+    fn a_record_of_a_live_process_is_listed_and_kept() {
+        let t = TempDir::new("read-live");
+        let pid = std::process::id();
+        let start = ps_lstart(pid);
+        let record = SessionRecord {
+            title: Some("Fix the bug".into()),
+            ..rec(1_000, Some(pid), Some(&start))
+        };
+        let s = source_with(&t, &[("a.json", record)]);
+        assert_eq!(
+            s.fetch_at(2_000),
+            vec![Agent {
+                status: Status::Working,
+                name: "claude".into(),
+                workspace: "proj".into(),
+                title: "Fix the bug".into(),
+            }]
+        );
+        assert_eq!(entries(&t.path()), vec!["a.json"]);
+    }
+
+    #[test]
+    fn a_record_of_a_pid_that_ps_does_not_know_is_removed() {
+        let t = TempDir::new("read-gone");
+        let s = source_with(
+            &t,
+            &[(
+                "a.json",
+                rec(1_000, Some(4242), Some("Thu Oct 29 18:19:06 2026")),
+            )],
+        );
+        assert!(s
+            .fetch_with(2_000, |_| Liveness::Alive(HashMap::new()))
+            .is_empty());
+        assert!(entries(&t.path()).is_empty());
+    }
+
+    #[test]
+    fn a_record_with_a_pid_but_no_recorded_start_is_removed() {
+        let t = TempDir::new("read-no-start");
+        let s = source_with(&t, &[("a.json", rec(1_000, Some(4242), None))]);
+        let alive = HashMap::from([(4242, "Thu Oct 29 18:19:06 2026".to_string())]);
+        assert!(s.fetch_with(2_000, |_| Liveness::Alive(alive)).is_empty());
+        assert!(entries(&t.path()).is_empty());
+    }
+
+    #[test]
+    fn a_record_whose_pid_was_reused_is_removed() {
+        let t = TempDir::new("read-reused");
+        let pid = std::process::id();
+        let s = source_with(
+            &t,
+            &[(
+                "a.json",
+                rec(1_000, Some(pid), Some("Thu Oct 29 18:19:06 1999")),
+            )],
+        );
+        assert!(s.fetch_at(2_000).is_empty());
+        assert!(entries(&t.path()).is_empty());
+    }
+
+    #[test]
+    fn a_record_without_a_pid_expires_after_24_hours_exactly() {
+        let t = TempDir::new("read-ttl");
+        let day = 24 * 60 * 60 * 1000;
+        let s = source_with(
+            &t,
+            &[
+                ("edge.json", rec(1_000, None, None)),
+                ("over.json", rec(999, None, None)),
+                ("inside.json", rec(1_001, None, None)),
+            ],
+        );
+        assert_eq!(s.fetch_with(1_000 + day, never_called).len(), 2);
+        let mut left = entries(&t.path());
+        left.sort();
+        assert_eq!(left, vec!["edge.json", "inside.json"]);
+    }
+
+    #[test]
+    fn a_broken_file_is_skipped_and_left_alone() {
+        let t = TempDir::new("read-broken");
+        std::fs::create_dir_all(t.path()).unwrap();
+        std::fs::write(t.path().join("bad.json"), "not json").unwrap();
+        let s = HookSource::in_dir(t.path());
+        assert!(s.fetch_with(0, never_called).is_empty());
+        assert!(t.path().join("bad.json").exists());
+    }
+
+    #[test]
+    fn a_hidden_temp_file_is_not_read_even_when_it_holds_a_valid_record() {
+        let t = TempDir::new("read-hidden");
+        let s = source_with(
+            &t,
+            &[
+                (".abc.1.tmp.json", rec(1_000, None, None)),
+                ("note.txt", rec(1_000, None, None)),
+            ],
+        );
+        assert!(s.fetch_with(2_000, never_called).is_empty());
+    }
+
+    #[test]
+    fn a_broken_file_is_warned_about_on_the_first_fetch_only() {
+        let t = TempDir::new("read-warn-once");
+        std::fs::create_dir_all(t.path()).unwrap();
+        std::fs::write(t.path().join("bad.json"), "not json").unwrap();
+        let s = HookSource::in_dir(t.path());
+        // Nothing was warned about yet, so the first claim of the name succeeds.
+        assert!(s.first_warning("other.json"));
+        assert!(!s.first_warning("other.json"));
+        s.fetch_with(0, never_called);
+        // The fetch claimed "bad.json" itself, so a later fetch stays quiet.
+        assert!(!s.first_warning("bad.json"));
+    }
+
+    #[test]
+    fn a_failed_ps_keeps_pid_records_but_expired_pidless_ones_still_go() {
+        let t = TempDir::new("read-ps-failed");
+        let s = source_with(
+            &t,
+            &[
+                ("pid.json", rec(0, Some(99_990), Some("x"))),
+                ("old.json", rec(0, None, None)),
+            ],
+        );
+        let now = 24 * 60 * 60 * 1000 + 1;
+        let agents = s.fetch_with(now, |_| Liveness::Failed);
+        assert_eq!(agents.len(), 1);
+        assert_eq!(entries(&t.path()), vec!["pid.json"]);
+    }
+
+    #[test]
+    fn ps_is_asked_once_for_every_pid_and_not_at_all_without_pids() {
+        let t = TempDir::new("read-ps-once");
+        let s = source_with(
+            &t,
+            &[
+                ("a.json", rec(1, Some(11), Some("x"))),
+                ("b.json", rec(1, Some(22), Some("y"))),
+                ("c.json", rec(1, None, None)),
+            ],
+        );
+        let asked = std::cell::RefCell::new(vec![]);
+        s.fetch_with(2, |pids| {
+            asked.borrow_mut().push(pids.to_vec());
+            Liveness::Failed
+        });
+        let mut asked = asked.into_inner();
+        assert_eq!(asked.len(), 1);
+        asked[0].sort();
+        assert_eq!(asked[0], vec![11, 22]);
+    }
+
+    #[test]
+    fn a_record_rewritten_before_the_removal_is_not_removed() {
+        let t = TempDir::new("read-reread");
+        put(&t.path(), "a.json", &rec(5_000, None, None));
+        let path = t.path().join("a.json");
+        assert!(!remove_if_unchanged(&path, 1_000));
+        assert!(path.exists());
+        assert!(remove_if_unchanged(&path, 5_000));
+        assert!(!path.exists());
+        // Already gone, as when the hook's SessionEnd got there first.
+        assert!(remove_if_unchanged(&path, 5_000));
+    }
+
+    #[test]
+    fn parse_liveness_reads_pid_and_lstart_per_line() {
+        let Liveness::Alive(map) = parse_liveness(0, "  123 Thu Oct 29 18:19:06 2026\n", "") else {
+            panic!("expected Alive");
+        };
+        assert_eq!(
+            map.get(&123).map(String::as_str),
+            Some("Thu Oct 29 18:19:06 2026")
+        );
+    }
+
+    #[test]
+    fn parse_liveness_reads_every_line() {
+        let out = "  11 Thu Oct 29 18:19:06 2026\n 2222 Fri Oct 30 01:02:03 2026\n";
+        let Liveness::Alive(map) = parse_liveness(0, out, "") else {
+            panic!("expected Alive");
+        };
+        assert_eq!(map.len(), 2);
+        assert_eq!(map[&11], "Thu Oct 29 18:19:06 2026");
+        assert_eq!(map[&2222], "Fri Oct 30 01:02:03 2026");
+    }
+
+    #[test]
+    fn parse_liveness_treats_exit_1_with_no_output_as_nobody_alive() {
+        assert!(matches!(parse_liveness(1, "", ""), Liveness::Alive(m) if m.is_empty()));
+        assert!(matches!(parse_liveness(1, " \n", "\n"), Liveness::Alive(m) if m.is_empty()));
+    }
+
+    #[test]
+    fn parse_liveness_fails_on_any_other_error() {
+        assert!(matches!(
+            parse_liveness(1, "", "ps: Invalid process id: abc"),
+            Liveness::Failed
+        ));
+        assert!(matches!(parse_liveness(2, "", ""), Liveness::Failed));
+        assert!(matches!(parse_liveness(-1, "", ""), Liveness::Failed));
+    }
+
+    /// The real `ps` answer for a pid, the same call the source makes.
+    fn ps_lstart(pid: u32) -> String {
+        match run_ps_liveness(&[pid]) {
+            Liveness::Alive(mut m) => m.remove(&pid).expect("pid is alive"),
+            Liveness::Failed => panic!("ps failed"),
+        }
     }
 }
