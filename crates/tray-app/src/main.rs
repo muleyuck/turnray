@@ -1,5 +1,6 @@
 mod backend;
 mod herdr;
+mod hooks;
 mod images;
 mod login;
 mod menu;
@@ -36,6 +37,19 @@ fn main() {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_writer(std::io::stderr)
         .init();
+
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
+        [] => {}
+        ["hook", "claude"] => {
+            hooks::run_hook();
+            std::process::exit(0);
+        }
+        _ => {
+            eprintln!("usage: turnray [hook claude]");
+            std::process::exit(2);
+        }
+    }
 
     let mut event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
 
