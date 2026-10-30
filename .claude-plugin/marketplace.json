@@ -1,0 +1,12 @@
+{
+  "name": "turnray",
+  "owner": { "name": "muleyuck" },
+  "description": "turnray: show the status of Claude Code sessions in the macOS menu bar",
+  "plugins": [
+    {
+      "name": "turnray",
+      "source": "./plugin",
+      "description": "Report Claude Code session status to turnray, the macOS menu bar app"
+    }
+  ]
+}

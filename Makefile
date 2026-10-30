@@ -39,6 +39,7 @@ app:
 		target/aarch64-apple-darwin/release/turnray target/x86_64-apple-darwin/release/turnray
 	sed 's/@VERSION@/$(VERSION)/g' packaging/Info.plist.in > $(APP)/Contents/Info.plist
 	cp $(ASSETS)/AppIcon.icns $(APP)/Contents/Resources/AppIcon.icns
+	printf '1\n' > $(APP)/Contents/Resources/hook-protocol
 	codesign --force -s - $(APP)
 	lipo -archs $(BIN) | grep -qw arm64
 	lipo -archs $(BIN) | grep -qw x86_64

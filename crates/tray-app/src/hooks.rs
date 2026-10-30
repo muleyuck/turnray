@@ -991,4 +991,194 @@ mod tests {
             Liveness::Failed => panic!("ps failed"),
         }
     }
+
+    const HOOK_SCRIPT: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../plugin/scripts/turnray-hook"
+    );
+
+    /// A `<root>/<name>/turnray.app` whose turnray records its argument count, its
+    /// arguments (one per line) and its stdin in `<root>/<name>/called-*`, prints to stdout
+    /// and exits 2. It finds where to record from its own path, so no fixture path is
+    /// spliced into its source. `protocol` is the `hook-protocol` content, or `None` for
+    /// no such file.
+    fn fake_app(root: &Path, name: &str, protocol: Option<&str>) -> PathBuf {
+        let dir = root.join(name);
+        let app = dir.join("turnray.app");
+        std::fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
+        std::fs::create_dir_all(app.join("Contents/Resources")).unwrap();
+        if let Some(protocol) = protocol {
+            std::fs::write(app.join("Contents/Resources/hook-protocol"), protocol).unwrap();
+        }
+        let bin = app.join("Contents/MacOS/turnray");
+        std::fs::write(
+            &bin,
+            "#!/bin/sh\nout=$(dirname \"$0\")/../../..\nprintf '%s\\n' \"$#\" \"$@\" > \"$out/called-args\"\ncat > \"$out/called-stdin\"\necho out\nexit 2\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        dir
+    }
+
+    /// Runs the plugin script after `configure` has set up its environment; returns the
+    /// exit code, its stdout and whether all of `input` was accepted on stdin.
+    fn run_hook_script_with(
+        configure: impl FnOnce(&mut Command),
+        input: &[u8],
+    ) -> (Option<i32>, Vec<u8>, bool) {
+        let mut command = Command::new(HOOK_SCRIPT);
+        command
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped());
+        configure(&mut command);
+        let mut child = command.spawn().expect("the script is executable");
+        let mut stdin = child.stdin.take().unwrap();
+        let input = input.to_vec();
+        let writer = std::thread::spawn(move || stdin.write_all(&input).is_ok());
+        let out = child.wait_with_output().unwrap();
+        (out.status.code(), out.stdout, writer.join().unwrap())
+    }
+
+    /// `run_hook_script_with` with `search` as `TURNRAY_HOOK_APP_DIRS`.
+    fn run_hook_script(search: &str, input: &[u8]) -> (Option<i32>, Vec<u8>, bool) {
+        run_hook_script_with(
+            |c| {
+                c.env("TURNRAY_HOOK_APP_DIRS", search);
+            },
+            input,
+        )
+    }
+
+    fn joined(dirs: &[&Path]) -> String {
+        dirs.iter()
+            .map(|d| d.display().to_string())
+            .collect::<Vec<_>>()
+            .join(":")
+    }
+
+    #[test]
+    fn turnray_hook_without_an_app_exits_0_silently_and_drains_stdin() {
+        let tmp = TempDir::new("hook-none");
+        let empty = tmp.0.join("empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        let (code, stdout, drained) = run_hook_script(&joined(&[&empty]), &vec![b'x'; 1 << 20]);
+        assert_eq!(code, Some(0));
+        assert!(stdout.is_empty());
+        assert!(drained);
+    }
+
+    #[test]
+    fn turnray_hook_ignores_an_app_with_another_protocol() {
+        let tmp = TempDir::new("hook-proto");
+        let dir = fake_app(&tmp.0, "a", Some("2\n"));
+        let (code, stdout, _) = run_hook_script(&joined(&[&dir]), b"{}");
+        assert_eq!(code, Some(0));
+        assert!(stdout.is_empty());
+        assert!(!dir.join("called-args").exists());
+    }
+
+    #[test]
+    fn turnray_hook_ignores_an_app_without_a_protocol_file() {
+        let tmp = TempDir::new("hook-noproto");
+        let dir = fake_app(&tmp.0, "a", None);
+        let (code, stdout, _) = run_hook_script(&joined(&[&dir]), b"{}");
+        assert_eq!(code, Some(0));
+        assert!(stdout.is_empty());
+        assert!(!dir.join("called-args").exists());
+    }
+
+    #[test]
+    fn turnray_hook_passes_stdin_to_hook_claude_and_hides_the_childs_result() {
+        let tmp = TempDir::new("hook-call");
+        let dir = fake_app(&tmp.0, "a", Some("1\n"));
+        let (code, stdout, _) = run_hook_script(&joined(&[&dir]), b"{\"k\":\"v\"}");
+        assert_eq!(code, Some(0));
+        assert!(stdout.is_empty());
+        assert_eq!(
+            std::fs::read_to_string(dir.join("called-args")).unwrap(),
+            "2\nhook\nclaude\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("called-stdin")).unwrap(),
+            "{\"k\":\"v\"}"
+        );
+    }
+
+    #[test]
+    fn turnray_hook_uses_only_the_first_matching_app() {
+        let tmp = TempDir::new("hook-first");
+        let skipped = fake_app(&tmp.0, "skipped", Some("2\n"));
+        let first = fake_app(&tmp.0, "first", Some("1\n"));
+        let second = fake_app(&tmp.0, "second", Some("1\n"));
+        let (code, _, _) = run_hook_script(&joined(&[&skipped, &first, &second]), b"{}");
+        assert_eq!(code, Some(0));
+        assert!(first.join("called-args").exists());
+        assert!(!second.join("called-args").exists());
+    }
+
+    #[test]
+    fn turnray_hook_uses_a_search_entry_literally_without_globbing() {
+        let tmp = TempDir::new("hook-glob");
+        let sibling = fake_app(&tmp.0, "g1", Some("1\n"));
+        let pattern = format!("{}/g*", tmp.0.display());
+        let (code, stdout, _) = run_hook_script(&pattern, b"{}");
+        assert_eq!(code, Some(0));
+        assert!(stdout.is_empty());
+        assert!(!sibling.join("called-args").exists());
+    }
+
+    #[test]
+    fn turnray_hook_finds_an_app_in_a_dir_with_a_space() {
+        let tmp = TempDir::new("hook-space");
+        let dir = fake_app(&tmp.0, "with space", Some("1\n"));
+        let (code, _, _) = run_hook_script(&joined(&[&dir]), b"{}");
+        assert_eq!(code, Some(0));
+        assert!(dir.join("called-args").exists());
+    }
+
+    /// The default list starts with the real `/Applications`, so the tests that rely on it
+    /// must not run where turnray is installed.
+    fn real_app_installed() -> bool {
+        let installed = Path::new("/Applications/turnray.app").exists();
+        if installed {
+            eprintln!("skipped: /Applications/turnray.app exists");
+        }
+        installed
+    }
+
+    #[test]
+    fn turnray_hook_searches_home_applications_by_default() {
+        if real_app_installed() {
+            return;
+        }
+        let tmp = TempDir::new("hook-home");
+        let home = tmp.0.join("ho me");
+        let dir = fake_app(&home, "Applications", Some("1\n"));
+        let (code, _, _) = run_hook_script_with(
+            |c| {
+                c.env_remove("TURNRAY_HOOK_APP_DIRS").env("HOME", &home);
+            },
+            b"{}",
+        );
+        assert_eq!(code, Some(0));
+        assert!(dir.join("called-args").exists());
+    }
+
+    #[test]
+    fn turnray_hook_searches_nothing_when_the_dirs_variable_is_empty() {
+        if real_app_installed() {
+            return;
+        }
+        let tmp = TempDir::new("hook-emptyvar");
+        let dir = fake_app(&tmp.0, "Applications", Some("1\n"));
+        let (code, stdout, _) = run_hook_script_with(
+            |c| {
+                c.env("TURNRAY_HOOK_APP_DIRS", "").env("HOME", &tmp.0);
+            },
+            b"{}",
+        );
+        assert_eq!(code, Some(0));
+        assert!(stdout.is_empty());
+        assert!(!dir.join("called-args").exists());
+    }
 }
