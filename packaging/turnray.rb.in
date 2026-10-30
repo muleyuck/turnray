@@ -4,7 +4,7 @@ cask "turnray" do
 
   url "https://github.com/muleyuck/turnray/releases/download/v#{version}/turnray-#{version}.zip"
   name "turnray"
-  desc "Menu bar app that shows the status of AI agents running under herdr"
+  desc "Menu bar app that shows the status of AI agents from herdr or Claude Code hooks"
   homepage "https://github.com/muleyuck/turnray"
 
   depends_on :macos
@@ -19,8 +19,11 @@ cask "turnray" do
   zap trash: "~/Library/Application Support/turnray"
 
   caveats <<~EOS
-    turnray shows agents from herdr, so herdr must be installed and running
-    (for example: brew install herdr).
+    turnray shows agents from herdr, so either run herdr (for example:
+    brew install herdr) or install its Claude Code plugin:
+
+      claude plugin marketplace add muleyuck/turnray
+      claude plugin install turnray@turnray
 
     To start turnray at login, check Launch at login in its settings (⚙).
     On macOS 12 and earlier, add it in

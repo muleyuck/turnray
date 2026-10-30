@@ -26,7 +26,8 @@ A Cargo workspace with two crates:
 
 - `crates/agent-core` — logic with no GUI dependency: `Status` and `Agent` (`model.rs`),
   priority order (`priority.rs`), settings parsing (`settings.rs`), herdr's JSON
-  (`herdr.rs`) and the `DataSource` trait (`source.rs`)
+  (`herdr.rs`), Claude Code hook events and session records (`hook.rs`) and the
+  `DataSource` trait (`source.rs`)
 - `crates/tray-app` — the macOS app:
   - `ui.rs` works out what to show (`TrayView`, `PanelContent`, `SettingsView`) from the
     state alone, so it is tested without a menu bar or a panel. Put display decisions here,
@@ -41,8 +42,21 @@ A Cargo workspace with two crates:
     runs a child with a deadline, a cap on its output and a process-group kill
   - `backend.rs` polls the source every second; `store.rs` saves the settings to
     `~/Library/Application Support/turnray/settings`
+  - `hooks.rs` runs `turnray hook claude` (writes a session file) and reads those files back
+    as a data source, dropping stale sessions; `merged.rs` merges that source with herdr's
   - `login.rs` turns launch at login on and off through `SMAppService` (macOS 13+, and
     only from the `.app`); macOS keeps that setting, not `store.rs`
+
+- `plugin/` is the Claude Code plugin (`.claude-plugin/plugin.json`, `hooks/hooks.json`,
+  `scripts/turnray-hook`, which finds `turnray.app` and runs `turnray hook claude`);
+  `.claude-plugin/marketplace.json` publishes it as `turnray@turnray`
+
+Data sources: the agent's own hook comes first. Add no per-terminal or per-multiplexer
+source besides `HerdrSource`.
+
+The arguments and stdin of `turnray hook claude` are a compatibility promise with the
+plugin. A breaking change raises the value in `Contents/Resources/hook-protocol` (set in
+the `Makefile`) and updates `plugin/scripts/turnray-hook` to match.
 
 ## Icons
 
@@ -62,6 +76,9 @@ A Cargo workspace with two crates:
 - Unit tests live in a `#[cfg(test)] mod tests` at the bottom of each file
 - herdr is never called from tests: `tray-app/src/herdr.rs` runs `fetch` against a fake
   `herdr` shell script written to a temp dir
+
+- Hook tests use a temp dir and a fake `.app`, never the real `claude` or `~/.claude`.
+  Tests that run the real `ps` fail inside a sandbox, so run `make test` outside one
 
 ## Commits
 
