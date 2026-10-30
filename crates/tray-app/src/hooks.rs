@@ -229,8 +229,6 @@ const NO_OWNER_TTL_MS: u64 = 24 * 60 * 60 * 1000;
 
 /// The app side of the Claude Code source: reads the session files the hook wrote and
 /// removes the ones whose `claude` is gone.
-// wired into main in the next task
-#[allow(dead_code)]
 pub struct HookSource {
     dir: Option<PathBuf>,
     /// File names already warned about, so a broken file is not logged every second.
@@ -243,8 +241,6 @@ pub enum Liveness {
     Failed,
 }
 
-// wired into main in the next task
-#[allow(dead_code)]
 impl HookSource {
     pub fn new() -> HookSource {
         HookSource::with_dir(sessions_dir())
@@ -339,8 +335,6 @@ impl HookSource {
     }
 }
 
-// wired into main in the next task
-#[allow(dead_code)]
 impl DataSource for HookSource {
     fn fetch(&self) -> Result<Vec<Agent>, SourceError> {
         Ok(self.fetch_with(now_ms(), run_ps_liveness))

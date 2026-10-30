@@ -4,6 +4,7 @@ mod hooks;
 mod images;
 mod login;
 mod menu;
+mod merged;
 mod panel;
 mod process;
 mod store;
@@ -74,7 +75,10 @@ fn main() {
     }));
     let panel_proxy = event_loop.create_proxy();
 
-    let source: Arc<dyn DataSource> = Arc::new(herdr::HerdrSource::default());
+    let source: Arc<dyn DataSource> = Arc::new(merged::MergedSource::new(
+        Box::new(herdr::HerdrSource::default()),
+        Box::new(hooks::HookSource::new()),
+    ));
     let mut app = App::new(store::load(), source.emitted_statuses());
     spawn_backend(source, event_loop.create_proxy());
 
