@@ -33,6 +33,16 @@ impl DataSource for MergedSource {
         let hooks = self.hooks.fetch().unwrap_or_default();
         match herdr {
             Ok(mut agents) => {
+                // Codex's hook also fires inside herdr, so the same session can arrive
+                // from both sources; herdr's card wins.
+                let seen: Vec<&str> = agents
+                    .iter()
+                    .filter_map(|a| a.session_id.as_deref())
+                    .collect();
+                let hooks: Vec<Agent> = hooks
+                    .into_iter()
+                    .filter(|h| !h.session_id.as_deref().is_some_and(|id| seen.contains(&id)))
+                    .collect();
                 agents.extend(hooks);
                 Ok(agents)
             }
@@ -70,7 +80,66 @@ mod tests {
             name: name.into(),
             workspace: String::new(),
             title: String::new(),
+            session_id: None,
         }
+    }
+
+    fn session(name: &str, id: Option<&str>) -> Agent {
+        Agent {
+            session_id: id.map(Into::into),
+            ..agent(name)
+        }
+    }
+
+    #[test]
+    fn a_hook_session_that_herdr_also_reports_is_dropped_and_others_stay() {
+        let got = merged(
+            Ok(vec![session("h", Some("s1"))]),
+            Ok(vec![
+                session("dup", Some("s1")),
+                session("other", Some("s2")),
+            ]),
+        );
+        assert_eq!(
+            got,
+            Ok(vec![session("h", Some("s1")), session("other", Some("s2"))])
+        );
+    }
+
+    #[test]
+    fn a_hook_session_matching_any_herdr_agent_is_dropped() {
+        let got = merged(
+            Ok(vec![session("h1", Some("s1")), session("h2", Some("s2"))]),
+            Ok(vec![session("dup", Some("s2"))]),
+        );
+        assert_eq!(
+            got,
+            Ok(vec![session("h1", Some("s1")), session("h2", Some("s2"))])
+        );
+    }
+
+    #[test]
+    fn a_hook_session_without_an_id_stays_beside_a_herdr_agent_with_one() {
+        let got = merged(
+            Ok(vec![session("h", Some("s1"))]),
+            Ok(vec![session("c", None)]),
+        );
+        assert_eq!(got, Ok(vec![session("h", Some("s1")), session("c", None)]));
+    }
+
+    #[test]
+    fn a_hook_session_with_an_id_stays_beside_a_herdr_agent_without_one() {
+        let got = merged(
+            Ok(vec![session("h", None)]),
+            Ok(vec![session("c", Some("s1"))]),
+        );
+        assert_eq!(got, Ok(vec![session("h", None), session("c", Some("s1"))]));
+    }
+
+    #[test]
+    fn without_herdr_hook_sessions_are_kept_even_with_ids() {
+        let got = merged(Err(not_found()), Ok(vec![session("c", Some("s1"))]));
+        assert_eq!(got, Ok(vec![session("c", Some("s1"))]));
     }
 
     fn merged(

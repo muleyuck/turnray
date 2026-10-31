@@ -202,7 +202,11 @@ status. This is an approximation:
   disappears within a second of quitting
 - With the npm package or the desktop app, turnray can fail to find Codex's process. Then
   a card for a killed session disappears only after 24 hours
-- Codex in a herdr pane is shown through herdr only
+- Codex in a herdr pane is shown once if herdr's Codex integration is installed
+  (`herdr integration install codex`) and Codex is started with `codex --no-daemon`:
+  turnray matches the plugin's report to herdr's agent by session, and only then does
+  herdr learn the session. Otherwise the same Codex is shown twice, once by herdr and
+  once by the plugin
 
 ## Development
 

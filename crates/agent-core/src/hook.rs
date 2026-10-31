@@ -199,7 +199,7 @@ impl SessionRecord {
         })
     }
 
-    pub fn to_agent(&self) -> Agent {
+    pub fn to_agent(&self, session_id: &str) -> Agent {
         let workspace = self
             .cwd
             .split('/')
@@ -210,6 +210,7 @@ impl SessionRecord {
             name: self.agent.as_str().to_string(),
             workspace: workspace.to_string(),
             title: self.title.clone().unwrap_or_default(),
+            session_id: Some(session_id.to_string()),
         }
     }
 }
@@ -508,7 +509,7 @@ mod tests {
             ("/Users/x/proj/", "proj"),
             ("/", "/"),
         ] {
-            let a = record(cwd).to_agent();
+            let a = record(cwd).to_agent("s");
             assert_eq!(a.workspace, workspace, "{cwd}");
             assert_eq!(a.name, "claude");
             assert_eq!(a.status, Status::Working);
@@ -522,7 +523,7 @@ mod tests {
             title: None,
             ..record("/x/y")
         };
-        assert_eq!(r.to_agent().title, "");
+        assert_eq!(r.to_agent("s").title, "");
     }
 
     #[test]
@@ -681,6 +682,6 @@ mod tests {
             agent: HookAgent::Codex,
             ..record("/x/y")
         };
-        assert_eq!(r.to_agent().name, "codex");
+        assert_eq!(r.to_agent("s").name, "codex");
     }
 }

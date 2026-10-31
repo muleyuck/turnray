@@ -218,7 +218,9 @@ fn handle(
 ) -> Result<(), String> {
     // Read to the end first: an agent writing to a pipe nobody reads blocks or gets EPIPE.
     let input = read_capped(reader, cap).ok_or("input too large")?;
-    if invocation.herdr_env {
+    // Codex's hooks run in the environment of its app-server daemon, which can carry
+    // HERDR_ENV=1 for a Codex used outside herdr, so only Claude can trust it.
+    if invocation.herdr_env && invocation.agent == HookAgent::Claude {
         return Ok(());
     }
     write_event_with(
@@ -376,7 +378,10 @@ impl HookSource {
                 };
                 !(dead && remove_if_unchanged(path, r.updated_at))
             })
-            .map(|(_, r)| r.to_agent())
+            .map(|(path, r)| {
+                let id = path.file_stem().map(|s| s.to_string_lossy());
+                r.to_agent(id.as_deref().unwrap_or_default())
+            })
             .collect()
     }
 
@@ -668,6 +673,21 @@ mod tests {
         handle(&t.path(), &mut reader, &claude(true), 1_000, owner, 1024).unwrap();
         assert!(entries(&t.path()).is_empty());
         assert_eq!(reader.position() as usize, input.len());
+    }
+
+    #[test]
+    fn herdr_env_does_not_stop_codex_from_writing() {
+        let t = TempDir::new("herdr-env-codex");
+        handle(
+            &t.path(),
+            Cursor::new(event("UserPromptSubmit", PROMPT)),
+            &invocation(HookAgent::Codex, Some("abc-123"), true),
+            1_000,
+            owner,
+            1024,
+        )
+        .unwrap();
+        assert_eq!(entries(&t.path()), vec!["abc-123.json"]);
     }
 
     #[test]
@@ -971,7 +991,7 @@ mod tests {
         .unwrap();
         let r = record(&t.path());
         assert_eq!((r.agent, r.status), (HookAgent::Codex, Status::Working));
-        assert_eq!(r.to_agent().name, "codex");
+        assert_eq!(r.to_agent("s").name, "codex");
     }
 
     #[test]
@@ -1203,9 +1223,22 @@ mod tests {
                 name: "claude".into(),
                 workspace: "proj".into(),
                 title: "Fix the bug".into(),
+                session_id: Some("a".into()),
             }]
         );
         assert_eq!(entries(&t.path()), vec!["a.json"]);
+    }
+
+    #[test]
+    fn a_listed_session_carries_its_file_name_without_json_as_session_id() {
+        let t = TempDir::new("read-session-id");
+        let s = source_with(&t, &[("abc-123.json", rec(1_000, None, None))]);
+        let ids: Vec<_> = s
+            .fetch_at(2_000)
+            .into_iter()
+            .map(|a| a.session_id)
+            .collect();
+        assert_eq!(ids, vec![Some("abc-123".to_string())]);
     }
 
     #[test]
