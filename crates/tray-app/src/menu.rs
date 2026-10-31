@@ -53,7 +53,7 @@ impl App {
         // worth drawing (the full style's would be zero pixels wide), so it is skipped.
         if view.visible && last.map(|l| &l.image) != Some(&view.image) {
             // set_icon alone drops the template flag that lets macOS tint the image.
-            tray.set_icon_with_as_template(Some(crate::tray_icon(&view.image)), true)
+            tray.set_icon_templated(Some(crate::tray_icon(&view.image)))
                 .expect("tray icon update");
         }
         if last.map(|l| &l.title) != Some(&view.title) {
