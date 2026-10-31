@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.0](https://github.com/muleyuck/turnray/compare/v0.2.0...v0.3.0) (2026-10-31)
+
+
+### Features
+
+* add Launch at login to the settings view ([#20](https://github.com/muleyuck/turnray/issues/20)) ([9899a5a](https://github.com/muleyuck/turnray/commit/9899a5a97a56c28b932d5dd352c164166287550b)), closes [#5](https://github.com/muleyuck/turnray/issues/5)
+* show Claude Code sessions without herdr through a Claude Code plugin ([#23](https://github.com/muleyuck/turnray/issues/23)) ([4499921](https://github.com/muleyuck/turnray/commit/4499921d6c955f1a91e389ced99b10ca05654488))
+
 ## [0.2.0](https://github.com/muleyuck/turnray/compare/v0.1.1...v0.2.0) (2026-10-10)
 
 
