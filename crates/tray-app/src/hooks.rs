@@ -9,7 +9,9 @@ use std::process::Command;
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use agent_core::hook::{decide, valid_session_id, Action, HookEvent, SessionRecord, EMITTED};
+use agent_core::hook::{
+    decide, valid_session_id, Action, HookAgent, HookEvent, SessionRecord, EMITTED,
+};
 use agent_core::{Agent, DataSource, SourceError, Status};
 
 use crate::process::output_with_timeout;
@@ -57,7 +59,11 @@ fn write_event_with(
             .and_then(|text| SessionRecord::from_json(&text).ok())
     };
     let existing = read();
-    match decide(&event, existing.as_ref().map(|r| r.status)) {
+    match decide(
+        HookAgent::Claude,
+        &event,
+        existing.as_ref().map(|r| r.status),
+    ) {
         None => Ok(()),
         Some(Action::Remove) => match std::fs::remove_file(&path) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),
@@ -79,6 +85,7 @@ fn write_event_with(
                 return Ok(());
             }
             let record = SessionRecord {
+                agent: HookAgent::Claude,
                 status,
                 cwd: event.cwd,
                 title: title.or_else(|| existing.and_then(|r| r.title)),
@@ -465,6 +472,7 @@ mod tests {
         assert_eq!(
             record(&t.path()),
             SessionRecord {
+                agent: HookAgent::Claude,
                 status: Status::Working,
                 cwd: "/Users/x/proj".into(),
                 title: Some("Fix the bug".into()),
@@ -750,6 +758,7 @@ mod tests {
 
     fn rec(updated_at: u64, pid: Option<u32>, pid_start: Option<&str>) -> SessionRecord {
         SessionRecord {
+            agent: HookAgent::Claude,
             status: Status::Working,
             cwd: "/Users/x/proj".into(),
             title: None,
