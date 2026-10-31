@@ -13,6 +13,8 @@ pub struct HookEvent {
     pub notification_type: Option<String>,
     #[serde(default)]
     pub prompt: Option<String>,
+    #[serde(default)]
+    pub source: Option<String>,
 }
 
 impl HookEvent {
@@ -56,6 +58,10 @@ pub fn decide(event: &HookEvent, current: Option<Status>) -> Option<Action> {
         },
         "PostToolUse" | "PostToolUseFailure" => write(Status::Working),
         "Stop" => write(Status::Done),
+        "SessionStart" => match event.source.as_deref() {
+            Some("startup" | "clear" | "resume") => write(Status::Idle),
+            _ => None,
+        },
         "SessionEnd" => Some(Action::Remove),
         _ => None,
     }
@@ -156,6 +162,14 @@ mod tests {
             agent_id: None,
             notification_type: None,
             prompt: None,
+            source: None,
+        }
+    }
+
+    fn session_start(source: &str) -> HookEvent {
+        HookEvent {
+            source: Some(source.into()),
+            ..event("SessionStart")
         }
     }
 
@@ -251,6 +265,40 @@ mod tests {
         assert_eq!(
             decide(&event("Stop"), Some(Status::Working)),
             write(Status::Done)
+        );
+    }
+
+    #[test]
+    fn a_started_cleared_or_resumed_session_is_idle() {
+        // A resumed session already has a record; a fresh or cleared one does not.
+        for (source, current) in [
+            ("startup", None),
+            ("clear", None),
+            ("resume", Some(Status::Done)),
+        ] {
+            assert_eq!(
+                decide(&session_start(source), current),
+                write(Status::Idle),
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_session_start_source_is_read_from_the_payload() {
+        let e = HookEvent::parse(
+            br#"{"session_id":"s1","cwd":"/x","hook_event_name":"SessionStart","source":"startup","model":"m"}"#,
+        )
+        .unwrap();
+        assert_eq!(e.source.as_deref(), Some("startup"));
+    }
+
+    #[test]
+    fn a_compaction_does_not_reset_the_status() {
+        // Compaction can happen mid-turn; idle would hide a working session.
+        assert_eq!(
+            decide(&session_start("compact"), Some(Status::Working)),
+            None
         );
     }
 
