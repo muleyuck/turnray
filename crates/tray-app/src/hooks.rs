@@ -1404,6 +1404,20 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/../../plugin/scripts/turnray-hook"
     );
+    const CODEX_HOOK_SCRIPT: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../plugin-codex/scripts/turnray-hook"
+    );
+
+    fn run_codex_hook_script(search: &str, input: &[u8]) -> (Option<i32>, Vec<u8>, bool) {
+        run_script_with(
+            CODEX_HOOK_SCRIPT,
+            |c| {
+                c.env("TURNRAY_HOOK_APP_DIRS", search);
+            },
+            input,
+        )
+    }
 
     /// A `<root>/<name>/turnray.app` whose turnray records its argument count, its
     /// arguments (one per line) and its stdin in `<root>/<name>/called-*`, prints to stdout
@@ -1411,12 +1425,17 @@ mod tests {
     /// spliced into its source. `protocol` is the `hook-protocol` content, or `None` for
     /// no such file.
     fn fake_app(root: &Path, name: &str, protocol: Option<&str>) -> PathBuf {
+        fake_app_marked(root, name, "hook-protocol", protocol)
+    }
+
+    /// `fake_app` with the protocol file called `marker`.
+    fn fake_app_marked(root: &Path, name: &str, marker: &str, protocol: Option<&str>) -> PathBuf {
         let dir = root.join(name);
         let app = dir.join("turnray.app");
         std::fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
         std::fs::create_dir_all(app.join("Contents/Resources")).unwrap();
         if let Some(protocol) = protocol {
-            std::fs::write(app.join("Contents/Resources/hook-protocol"), protocol).unwrap();
+            std::fs::write(app.join("Contents/Resources").join(marker), protocol).unwrap();
         }
         let bin = app.join("Contents/MacOS/turnray");
         std::fs::write(
@@ -1434,7 +1453,15 @@ mod tests {
         configure: impl FnOnce(&mut Command),
         input: &[u8],
     ) -> (Option<i32>, Vec<u8>, bool) {
-        let mut command = Command::new(HOOK_SCRIPT);
+        run_script_with(HOOK_SCRIPT, configure, input)
+    }
+
+    fn run_script_with(
+        script: &str,
+        configure: impl FnOnce(&mut Command),
+        input: &[u8],
+    ) -> (Option<i32>, Vec<u8>, bool) {
+        let mut command = Command::new(script);
         command
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped());
@@ -1580,6 +1607,143 @@ mod tests {
         let tmp = TempDir::new("hook-emptyvar");
         let dir = fake_app(&tmp.0, "Applications", Some("1\n"));
         let (code, stdout, _) = run_hook_script_with(
+            |c| {
+                c.env("TURNRAY_HOOK_APP_DIRS", "").env("HOME", &tmp.0);
+            },
+            b"{}",
+        );
+        assert_eq!(code, Some(0));
+        assert!(stdout.is_empty());
+        assert!(!dir.join("called-args").exists());
+    }
+
+    #[test]
+    fn turnray_codex_hook_without_an_app_exits_0_silently_and_drains_stdin() {
+        let tmp = TempDir::new("codex-none");
+        let empty = tmp.0.join("empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        let (code, stdout, drained) =
+            run_codex_hook_script(&joined(&[&empty]), &vec![b'x'; 1 << 20]);
+        assert_eq!(code, Some(0));
+        assert!(stdout.is_empty());
+        assert!(drained);
+    }
+
+    #[test]
+    fn turnray_codex_hook_ignores_an_app_with_only_the_claude_protocol_file() {
+        let tmp = TempDir::new("codex-claude-only");
+        let dir = fake_app(&tmp.0, "a", Some("1\n"));
+        let (code, stdout, _) = run_codex_hook_script(&joined(&[&dir]), b"{}");
+        assert_eq!(code, Some(0));
+        assert!(stdout.is_empty());
+        assert!(!dir.join("called-args").exists());
+    }
+
+    #[test]
+    fn turnray_codex_hook_ignores_an_app_with_another_protocol() {
+        let tmp = TempDir::new("codex-proto");
+        let dir = fake_app_marked(&tmp.0, "a", "hook-protocol-codex", Some("2\n"));
+        let (code, stdout, _) = run_codex_hook_script(&joined(&[&dir]), b"{}");
+        assert_eq!(code, Some(0));
+        assert!(stdout.is_empty());
+        assert!(!dir.join("called-args").exists());
+    }
+
+    #[test]
+    fn turnray_codex_hook_passes_stdin_to_hook_codex_and_hides_the_childs_result() {
+        let tmp = TempDir::new("codex-call");
+        let dir = fake_app_marked(&tmp.0, "a", "hook-protocol-codex", Some("1\n"));
+        let (code, stdout, _) = run_codex_hook_script(&joined(&[&dir]), b"{\"k\":\"v\"}");
+        assert_eq!(code, Some(0));
+        assert!(stdout.is_empty());
+        assert_eq!(
+            std::fs::read_to_string(dir.join("called-args")).unwrap(),
+            "2\nhook\ncodex\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("called-stdin")).unwrap(),
+            "{\"k\":\"v\"}"
+        );
+    }
+
+    #[test]
+    fn turnray_codex_hook_skips_an_app_whose_turnray_is_not_executable() {
+        let tmp = TempDir::new("codex-noexec");
+        let broken = fake_app_marked(&tmp.0, "broken", "hook-protocol-codex", Some("1\n"));
+        std::fs::set_permissions(
+            broken.join("turnray.app/Contents/MacOS/turnray"),
+            std::fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+        let valid = fake_app_marked(&tmp.0, "valid", "hook-protocol-codex", Some("1\n"));
+        let (code, _, _) = run_codex_hook_script(&joined(&[&broken, &valid]), b"{}");
+        assert_eq!(code, Some(0));
+        assert!(!broken.join("called-args").exists());
+        assert!(valid.join("called-args").exists());
+    }
+
+    const CODEX_MARKER: &str = "hook-protocol-codex";
+
+    #[test]
+    fn turnray_codex_hook_uses_only_the_first_matching_app() {
+        let tmp = TempDir::new("codex-first");
+        let skipped = fake_app_marked(&tmp.0, "skipped", CODEX_MARKER, Some("2\n"));
+        let first = fake_app_marked(&tmp.0, "first", CODEX_MARKER, Some("1\n"));
+        let second = fake_app_marked(&tmp.0, "second", CODEX_MARKER, Some("1\n"));
+        let (code, _, _) = run_codex_hook_script(&joined(&[&skipped, &first, &second]), b"{}");
+        assert_eq!(code, Some(0));
+        assert!(first.join("called-args").exists());
+        assert!(!second.join("called-args").exists());
+    }
+
+    #[test]
+    fn turnray_codex_hook_uses_a_search_entry_literally_without_globbing() {
+        let tmp = TempDir::new("codex-glob");
+        let sibling = fake_app_marked(&tmp.0, "g1", CODEX_MARKER, Some("1\n"));
+        let pattern = format!("{}/g*", tmp.0.display());
+        let (code, stdout, _) = run_codex_hook_script(&pattern, b"{}");
+        assert_eq!(code, Some(0));
+        assert!(stdout.is_empty());
+        assert!(!sibling.join("called-args").exists());
+    }
+
+    #[test]
+    fn turnray_codex_hook_finds_an_app_in_a_dir_with_a_space() {
+        let tmp = TempDir::new("codex-space");
+        let dir = fake_app_marked(&tmp.0, "with space", CODEX_MARKER, Some("1\n"));
+        let (code, _, _) = run_codex_hook_script(&joined(&[&dir]), b"{}");
+        assert_eq!(code, Some(0));
+        assert!(dir.join("called-args").exists());
+    }
+
+    #[test]
+    fn turnray_codex_hook_searches_home_applications_by_default() {
+        if real_app_installed() {
+            return;
+        }
+        let tmp = TempDir::new("codex-home");
+        let home = tmp.0.join("ho me");
+        let dir = fake_app_marked(&home, "Applications", CODEX_MARKER, Some("1\n"));
+        let (code, _, _) = run_script_with(
+            CODEX_HOOK_SCRIPT,
+            |c| {
+                c.env_remove("TURNRAY_HOOK_APP_DIRS").env("HOME", &home);
+            },
+            b"{}",
+        );
+        assert_eq!(code, Some(0));
+        assert!(dir.join("called-args").exists());
+    }
+
+    #[test]
+    fn turnray_codex_hook_searches_nothing_when_the_dirs_variable_is_empty() {
+        if real_app_installed() {
+            return;
+        }
+        let tmp = TempDir::new("codex-emptyvar");
+        let dir = fake_app_marked(&tmp.0, "Applications", CODEX_MARKER, Some("1\n"));
+        let (code, stdout, _) = run_script_with(
+            CODEX_HOOK_SCRIPT,
             |c| {
                 c.env("TURNRAY_HOOK_APP_DIRS", "").env("HOME", &tmp.0);
             },
