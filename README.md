@@ -11,7 +11,7 @@
   <img src="docs/images/overview.png" alt="turnray in the menu bar with its panel open" width="320">
 </p>
 
-turnray watches the AI agents running under herdr, and Claude Code sessions anywhere
+turnray watches the AI agents running under herdr, and Claude Code and Codex sessions anywhere
 through a plugin, and tells you, from the menu bar, which ones are waiting for you —
 without changing your terminal layout. The name is *turn*
 (your turn) + *tray*.
@@ -24,14 +24,16 @@ without changing your terminal layout. The name is *turn*
   status
 - **Your priority** — reorder the statuses to decide which one the menu bar puts first
 - **Live** — updates every second, and warns you when herdr can't be reached
-- **Works without herdr** — a Claude Code plugin reports Claude Code sessions in any
-  terminal ([Claude Code without herdr](#claude-code-without-herdr))
+- **Works without herdr** — a plugin reports Claude Code or Codex sessions in any
+  terminal ([Claude Code without herdr](#claude-code-without-herdr),
+  [Codex without herdr](#codex-without-herdr))
 
 ## Requirements
 
 - macOS
 - herdr, running ([how turnray finds it](#how-turnray-finds-herdr)), or the
-  [Claude Code plugin](#claude-code-plugin) for Claude Code sessions outside herdr
+  [Claude Code plugin](#claude-code-plugin) or [Codex plugin](#codex-plugin) for
+  sessions outside herdr
 
 ## Install
 
@@ -71,6 +73,26 @@ claude plugin install turnray@turnray
 - Third-party marketplaces don't auto-update by default. Update with
   `claude plugin update turnray@turnray`, or turn auto-update on for the marketplace
 - Remove it with `claude plugin uninstall turnray@turnray`. Deleting the app leaves the
+  plugin installed, but it does nothing without the app
+
+### Codex plugin
+
+To show Codex sessions that don't run under herdr, install the plugin after turnray
+itself:
+
+```sh
+codex plugin marketplace add muleyuck/turnray
+codex plugin add turnray@turnray
+```
+
+You can also add it from the CLI's `/plugins`.
+
+- After installing, and after every plugin update, approve the plugin's hooks in `/hooks`.
+  Until you do, Codex doesn't run them
+- `turnray.app` must be in `/Applications` or `~/Applications`, and built by a version
+  that includes this feature. Otherwise the plugin finds nothing and does nothing
+- Update with `codex plugin marketplace upgrade`, then approve the hooks again
+- Remove it with `codex plugin remove turnray@turnray`. Deleting the app leaves the
   plugin installed, but it does nothing without the app
 
 ## Usage
@@ -158,6 +180,29 @@ into a status. This is an approximation:
 - A killed session disappears within a second
 - Claude Code in a herdr pane is shown through herdr only, which reads the screen and is
   more accurate. Use it for the exact status
+
+## Codex without herdr
+
+The plugin's hooks report each Codex session's events to turnray, which turns them into a
+status. This is an approximation:
+
+- A session's card appears at its first prompt, not when Codex starts or after `/clear`:
+  Codex sends no event before that
+- **done** and **idle** are not told apart: a session stays done until its next prompt,
+  whether or not you have seen it
+- After `/new`, the old session's card stays done until its end event arrives or its
+  process exits
+- Denying a permission or pressing <kbd>Esc</kbd> returns the session to **idle**, so no
+  status is left behind
+- With `approvals_reviewer = "auto_review"`, the session shows **blocked** while the
+  automatic review decides, though Codex shows no prompt
+- By default Codex runs its sessions in a shared background server, so turnray cannot see
+  when you quit: the card stays until Codex ends the session, when you next start Codex
+  or 30 minutes later, whichever comes first. Started with `codex --no-daemon`, the card
+  disappears within a second of quitting
+- With the npm package or the desktop app, turnray can fail to find Codex's process. Then
+  a card for a killed session disappears only after 24 hours
+- Codex in a herdr pane is shown through herdr only
 
 ## Development
 
