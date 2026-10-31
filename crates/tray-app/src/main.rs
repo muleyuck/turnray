@@ -1,8 +1,10 @@
 mod backend;
 mod herdr;
+mod hooks;
 mod images;
 mod login;
 mod menu;
+mod merged;
 mod panel;
 mod process;
 mod store;
@@ -37,6 +39,19 @@ fn main() {
         .with_writer(std::io::stderr)
         .init();
 
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
+        [] => {}
+        ["hook", "claude"] => {
+            hooks::run_hook();
+            std::process::exit(0);
+        }
+        _ => {
+            eprintln!("usage: turnray [hook claude]");
+            std::process::exit(2);
+        }
+    }
+
     let mut event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
 
     #[cfg(target_os = "macos")]
@@ -60,7 +75,10 @@ fn main() {
     }));
     let panel_proxy = event_loop.create_proxy();
 
-    let source: Arc<dyn DataSource> = Arc::new(herdr::HerdrSource::default());
+    let source: Arc<dyn DataSource> = Arc::new(merged::MergedSource::new(
+        Box::new(herdr::HerdrSource::default()),
+        Box::new(hooks::HookSource::new()),
+    ));
     let mut app = App::new(store::load(), source.emitted_statuses());
     spawn_backend(source, event_loop.create_proxy());
 

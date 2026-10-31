@@ -11,8 +11,9 @@
   <img src="docs/images/overview.png" alt="turnray in the menu bar with its panel open" width="320">
 </p>
 
-turnray watches the AI agents running under herdr and tells you, from the menu bar, which
-ones are waiting for you — without changing your terminal layout. The name is *turn*
+turnray watches the AI agents running under herdr, and Claude Code sessions anywhere
+through a plugin, and tells you, from the menu bar, which ones are waiting for you —
+without changing your terminal layout. The name is *turn*
 (your turn) + *tray*.
 
 ## Features
@@ -23,11 +24,14 @@ ones are waiting for you — without changing your terminal layout. The name is 
   status
 - **Your priority** — reorder the statuses to decide which one the menu bar puts first
 - **Live** — updates every second, and warns you when herdr can't be reached
+- **Works without herdr** — a Claude Code plugin reports Claude Code sessions in any
+  terminal ([Claude Code without herdr](#claude-code-without-herdr))
 
 ## Requirements
 
 - macOS
-- herdr, running ([how turnray finds it](#how-turnray-finds-herdr))
+- herdr, running ([how turnray finds it](#how-turnray-finds-herdr)), or the
+  [Claude Code plugin](#claude-code-plugin) for Claude Code sessions outside herdr
 
 ## Install
 
@@ -51,6 +55,23 @@ brew install --cask muleyuck/tap/turnray
 
 To start turnray at login, check **Launch at login** in the panel's [settings](#settings).
 On macOS 12 and earlier, add it in **System Settings > General > Login Items** instead.
+
+### Claude Code plugin
+
+To show Claude Code sessions that don't run under herdr, install the plugin after
+turnray itself:
+
+```sh
+claude plugin marketplace add muleyuck/turnray
+claude plugin install turnray@turnray
+```
+
+- `turnray.app` must be in `/Applications` or `~/Applications`, and built by a version
+  that includes this feature. Otherwise the plugin finds nothing and does nothing
+- Third-party marketplaces don't auto-update by default. Update with
+  `claude plugin update turnray@turnray`, or turn auto-update on for the marketplace
+- Remove it with `claude plugin uninstall turnray@turnray`. Deleting the app leaves the
+  plugin installed, but it does nothing without the app
 
 ## Usage
 
@@ -123,6 +144,20 @@ in order:
 If none has it, turnray falls back to `command -v herdr` in a zsh login shell (`zsh -l`:
 `.zprofile` is read, `.zshrc` is not). If the menu bar shows the warning triangle, check
 that `herdr` is in one of those places.
+
+## Claude Code without herdr
+
+The plugin's hooks report each Claude Code session's events to turnray, which turns them
+into a status. This is an approximation:
+
+- **done** and **idle** are not told apart: a session stays done until its next prompt,
+  whether or not you have seen it
+- After you deny a permission the session stays **blocked**, and after you interrupt with
+  <kbd>Esc</kbd> it stays **working**, until the next prompt or exit. Claude Code sends no
+  event for either
+- A killed session disappears within a second
+- Claude Code in a herdr pane is shown through herdr only, which reads the screen and is
+  more accurate. Use it for the exact status
 
 ## Development
 

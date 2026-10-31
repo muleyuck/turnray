@@ -1,0 +1,23 @@
+#!/bin/sh
+# Hands a Claude Code hook event to turnray.app. Never fails and never prints: the exit
+# code and stdout of a hook steer Claude Code (exit 2 rejects a prompt or continues a Stop).
+dirs=${TURNRAY_HOOK_APP_DIRS-/Applications:$HOME/Applications}
+found=
+old_ifs=$IFS
+IFS=:
+set -f
+for dir in $dirs; do
+	app=$dir/turnray.app
+	if [ "$(cat "$app/Contents/Resources/hook-protocol" 2>/dev/null)" = 1 ] && [ -x "$app/Contents/MacOS/turnray" ]; then
+		found=$app
+		break
+	fi
+done
+IFS=$old_ifs
+set +f
+if [ -n "$found" ]; then
+	"$found/Contents/MacOS/turnray" hook claude >/dev/null 2>&1
+else
+	cat >/dev/null
+fi
+exit 0

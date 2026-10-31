@@ -154,7 +154,9 @@ pub fn panel_frame(icon: Rect, width: f64, height: f64, visible: Rect) -> Rect {
 /// The panel line for a failed fetch. A missing herdr says what to do about it.
 pub fn error_line(e: &SourceError) -> String {
     match e {
-        SourceError::NotFound(msg) => format!("{msg} — install herdr and start it"),
+        SourceError::NotFound(msg) => {
+            format!("{msg} — install herdr, or the turnray plugin for Claude Code")
+        }
         SourceError::Failed(msg) => msg.clone(),
     }
 }
@@ -537,7 +539,7 @@ mod tests {
     fn a_missing_herdr_says_what_to_do() {
         assert_eq!(
             error_line(&SourceError::NotFound("herdr not found".into())),
-            "herdr not found — install herdr and start it"
+            "herdr not found — install herdr, or the turnray plugin for Claude Code"
         );
         assert_eq!(error_line(&SourceError::Failed("boom".into())), "boom");
     }

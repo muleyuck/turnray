@@ -1,4 +1,5 @@
 pub mod herdr;
+pub mod hook;
 pub mod model;
 pub mod priority;
 pub mod settings;

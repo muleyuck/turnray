@@ -1,0 +1,6 @@
+{
+  "name": "turnray",
+  "description": "Report Claude Code session status to turnray, the macOS menu bar app",
+  "author": { "name": "muleyuck" },
+  "repository": "https://github.com/muleyuck/turnray"
+}
