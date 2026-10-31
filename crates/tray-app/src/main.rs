@@ -12,6 +12,7 @@ mod ui;
 
 use std::sync::Arc;
 
+use agent_core::hook::HookAgent;
 use agent_core::DataSource;
 use backend::{spawn_backend, UserEvent};
 use menu::App;
@@ -33,6 +34,11 @@ pub fn tray_icon(image: &TrayImage) -> Icon {
     Icon::from_rgba(img.rgba, img.width, img.height).expect("tray icon")
 }
 
+fn usage() -> ! {
+    eprintln!("usage: turnray [hook claude|codex]");
+    std::process::exit(2);
+}
+
 fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -42,14 +48,14 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
         [] => {}
-        ["hook", "claude"] => {
-            hooks::run_hook();
-            std::process::exit(0);
-        }
-        _ => {
-            eprintln!("usage: turnray [hook claude]");
-            std::process::exit(2);
-        }
+        ["hook", name] => match HookAgent::parse(name) {
+            Some(agent) => {
+                hooks::run_hook(agent);
+                std::process::exit(0);
+            }
+            None => usage(),
+        },
+        _ => usage(),
     }
 
     let mut event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
