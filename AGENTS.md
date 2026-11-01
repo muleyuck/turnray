@@ -50,13 +50,20 @@ A Cargo workspace with two crates:
 - `plugin/` is the Claude Code plugin (`.claude-plugin/plugin.json`, `hooks/hooks.json`,
   `scripts/turnray-hook`, which finds `turnray.app` and runs `turnray hook claude`);
   `.claude-plugin/marketplace.json` publishes it as `turnray@turnray`
+- `plugin-codex/` is the Codex plugin (`.codex-plugin/plugin.json`, `hooks/hooks.json`,
+  `scripts/turnray-hook`, which finds `turnray.app` and runs `turnray hook codex`);
+  `.agents/plugins/marketplace.json` publishes it as `turnray@turnray`
 
 Data sources: the agent's own hook comes first. Add no per-terminal or per-multiplexer
 source besides `HerdrSource`.
 
-The arguments and stdin of `turnray hook claude` are a compatibility promise with the
-plugin. A breaking change raises the value in `Contents/Resources/hook-protocol` (set in
-the `Makefile`) and updates `plugin/scripts/turnray-hook` to match.
+The arguments and stdin of `turnray hook <agent>` are a compatibility promise with that
+agent's plugin, each with its own mark in `Contents/Resources` (set in the `Makefile`):
+`hook-protocol` for `hook claude`, `hook-protocol-codex` for `hook codex`. A breaking
+change raises that agent's mark and updates its plugin's `scripts/turnray-hook` to match.
+
+Changing `plugin-codex/` makes every user approve its hooks again in `/hooks`: raise
+`version` in its `plugin.json` and keep the change minimal.
 
 ## Icons
 

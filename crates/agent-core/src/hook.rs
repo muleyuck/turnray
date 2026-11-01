@@ -33,16 +33,51 @@ pub enum Action {
     Remove,
 }
 
-pub fn decide(event: &HookEvent, current: Option<Status>) -> Option<Action> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HookAgent {
+    Claude,
+    Codex,
+}
+
+impl HookAgent {
+    pub fn parse(s: &str) -> Option<HookAgent> {
+        match s {
+            "claude" => Some(HookAgent::Claude),
+            "codex" => Some(HookAgent::Codex),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            HookAgent::Claude => "claude",
+            HookAgent::Codex => "codex",
+        }
+    }
+
+    pub fn process_name(self) -> &'static str {
+        self.as_str()
+    }
+}
+
+pub fn decide(agent: HookAgent, event: &HookEvent, current: Option<Status>) -> Option<Action> {
     if event.agent_id.is_some() {
         return None;
     }
-    let write = |status| {
-        Some(Action::Write {
-            status,
-            title: None,
-        })
-    };
+    match agent {
+        HookAgent::Claude => decide_claude(event, current),
+        HookAgent::Codex => decide_codex(event, current),
+    }
+}
+
+fn write(status: Status) -> Option<Action> {
+    Some(Action::Write {
+        status,
+        title: None,
+    })
+}
+
+fn decide_claude(event: &HookEvent, current: Option<Status>) -> Option<Action> {
     match event.hook_event_name.as_str() {
         "UserPromptSubmit" => Some(Action::Write {
             status: Status::Working,
@@ -67,6 +102,27 @@ pub fn decide(event: &HookEvent, current: Option<Status>) -> Option<Action> {
     }
 }
 
+fn decide_codex(event: &HookEvent, current: Option<Status>) -> Option<Action> {
+    match event.hook_event_name.as_str() {
+        "UserPromptSubmit" => Some(Action::Write {
+            status: Status::Working,
+            title: event.prompt.as_deref().and_then(title_from_prompt),
+        }),
+        "PermissionRequest" => write(Status::Blocked),
+        "PostToolUse" if matches!(current, Some(Status::Working | Status::Blocked)) => {
+            write(Status::Working)
+        }
+        "Stop" => write(Status::Done),
+        "Interrupt" => write(Status::Idle),
+        "SessionStart" => match event.source.as_deref() {
+            Some("startup" | "clear" | "resume") => write(Status::Idle),
+            _ => None,
+        },
+        "SessionEnd" => Some(Action::Remove),
+        _ => None,
+    }
+}
+
 pub fn title_from_prompt(prompt: &str) -> Option<String> {
     prompt
         .lines()
@@ -81,6 +137,7 @@ pub fn valid_session_id(id: &str) -> bool {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionRecord {
+    pub agent: HookAgent,
     pub status: Status,
     pub cwd: String,
     pub title: Option<String>,
@@ -94,6 +151,8 @@ pub struct SessionRecord {
 /// `Status` stays serde-free: the file holds its `as_str` name.
 #[derive(Serialize, Deserialize)]
 struct RawRecord {
+    #[serde(default)]
+    agent: Option<String>,
     status: String,
     cwd: String,
     #[serde(default)]
@@ -108,6 +167,7 @@ struct RawRecord {
 impl SessionRecord {
     pub fn to_json(&self) -> String {
         serde_json::to_string(&RawRecord {
+            agent: Some(self.agent.as_str().to_string()),
             status: self.status.as_str().to_string(),
             cwd: self.cwd.clone(),
             title: self.title.clone(),
@@ -122,7 +182,14 @@ impl SessionRecord {
         let raw: RawRecord = serde_json::from_str(text).map_err(|e| e.to_string())?;
         let status =
             Status::parse(&raw.status).ok_or_else(|| format!("unknown status {:?}", raw.status))?;
+        let agent = match raw.agent.as_deref() {
+            None => HookAgent::Claude,
+            Some(name) => {
+                HookAgent::parse(name).ok_or_else(|| format!("unknown agent {name:?}"))?
+            }
+        };
         Ok(SessionRecord {
+            agent,
             status,
             cwd: raw.cwd,
             title: raw.title,
@@ -132,7 +199,7 @@ impl SessionRecord {
         })
     }
 
-    pub fn to_agent(&self) -> Agent {
+    pub fn to_agent(&self, session_id: &str) -> Agent {
         let workspace = self
             .cwd
             .split('/')
@@ -140,9 +207,10 @@ impl SessionRecord {
             .unwrap_or(&self.cwd);
         Agent {
             status: self.status,
-            name: "claude".to_string(),
+            name: self.agent.as_str().to_string(),
             workspace: workspace.to_string(),
             title: self.title.clone().unwrap_or_default(),
+            session_id: Some(session_id.to_string()),
         }
     }
 }
@@ -180,13 +248,6 @@ mod tests {
         }
     }
 
-    fn write(status: Status) -> Option<Action> {
-        Some(Action::Write {
-            status,
-            title: None,
-        })
-    }
-
     fn record(cwd: &str) -> SessionRecord {
         SessionRecord {
             status: Status::Working,
@@ -195,7 +256,21 @@ mod tests {
             updated_at: 1_700_000_000_123,
             pid: Some(4242),
             pid_start: Some("Sat Oct 31 09:00:00 2026".into()),
+            agent: HookAgent::Claude,
         }
+    }
+
+    // Built here, not with the production `write`, so a wrong change to that
+    // helper cannot change the expectations along with the result.
+    fn writes(status: Status) -> Option<Action> {
+        Some(Action::Write {
+            status,
+            title: None,
+        })
+    }
+
+    fn codex(name: &str, current: Option<Status>) -> Option<Action> {
+        decide(HookAgent::Codex, &event(name), current)
     }
 
     #[test]
@@ -205,7 +280,7 @@ mod tests {
             ..event("UserPromptSubmit")
         };
         assert_eq!(
-            decide(&e, None),
+            decide(HookAgent::Claude, &e, None),
             Some(Action::Write {
                 status: Status::Working,
                 title: Some("fix the bug".into())
@@ -216,8 +291,8 @@ mod tests {
     #[test]
     fn a_permission_request_blocks() {
         assert_eq!(
-            decide(&event("PermissionRequest"), None),
-            write(Status::Blocked)
+            decide(HookAgent::Claude, &event("PermissionRequest"), None),
+            writes(Status::Blocked)
         );
     }
 
@@ -225,8 +300,8 @@ mod tests {
     fn notifications_that_ask_for_input_block() {
         for kind in ["elicitation_dialog", "agent_needs_input"] {
             assert_eq!(
-                decide(&notification(kind), None),
-                write(Status::Blocked),
+                decide(HookAgent::Claude, &notification(kind), None),
+                writes(Status::Blocked),
                 "{kind}"
             );
         }
@@ -235,16 +310,26 @@ mod tests {
     #[test]
     fn idle_prompt_idles_only_a_working_or_blocked_session() {
         let idle = notification("idle_prompt");
-        assert_eq!(decide(&idle, Some(Status::Working)), write(Status::Idle));
-        assert_eq!(decide(&idle, Some(Status::Blocked)), write(Status::Idle));
-        assert_eq!(decide(&idle, Some(Status::Done)), None);
-        assert_eq!(decide(&idle, None), None);
+        assert_eq!(
+            decide(HookAgent::Claude, &idle, Some(Status::Working)),
+            writes(Status::Idle)
+        );
+        assert_eq!(
+            decide(HookAgent::Claude, &idle, Some(Status::Blocked)),
+            writes(Status::Idle)
+        );
+        assert_eq!(decide(HookAgent::Claude, &idle, Some(Status::Done)), None);
+        assert_eq!(decide(HookAgent::Claude, &idle, None), None);
     }
 
     #[test]
     fn other_notifications_are_ignored() {
         assert_eq!(
-            decide(&notification("auth_success"), Some(Status::Working)),
+            decide(
+                HookAgent::Claude,
+                &notification("auth_success"),
+                Some(Status::Working)
+            ),
             None
         );
     }
@@ -253,8 +338,8 @@ mod tests {
     fn tool_use_results_mean_working() {
         for name in ["PostToolUse", "PostToolUseFailure"] {
             assert_eq!(
-                decide(&event(name), Some(Status::Blocked)),
-                write(Status::Working),
+                decide(HookAgent::Claude, &event(name), Some(Status::Blocked)),
+                writes(Status::Working),
                 "{name}"
             );
         }
@@ -263,8 +348,8 @@ mod tests {
     #[test]
     fn stop_means_done() {
         assert_eq!(
-            decide(&event("Stop"), Some(Status::Working)),
-            write(Status::Done)
+            decide(HookAgent::Claude, &event("Stop"), Some(Status::Working)),
+            writes(Status::Done)
         );
     }
 
@@ -277,8 +362,8 @@ mod tests {
             ("resume", Some(Status::Done)),
         ] {
             assert_eq!(
-                decide(&session_start(source), current),
-                write(Status::Idle),
+                decide(HookAgent::Claude, &session_start(source), current),
+                writes(Status::Idle),
                 "{source}"
             );
         }
@@ -297,7 +382,11 @@ mod tests {
     fn a_compaction_does_not_reset_the_status() {
         // Compaction can happen mid-turn; idle would hide a working session.
         assert_eq!(
-            decide(&session_start("compact"), Some(Status::Working)),
+            decide(
+                HookAgent::Claude,
+                &session_start("compact"),
+                Some(Status::Working)
+            ),
             None
         );
     }
@@ -305,14 +394,21 @@ mod tests {
     #[test]
     fn session_end_removes_the_record() {
         assert_eq!(
-            decide(&event("SessionEnd"), Some(Status::Done)),
+            decide(HookAgent::Claude, &event("SessionEnd"), Some(Status::Done)),
             Some(Action::Remove)
         );
     }
 
     #[test]
     fn an_unknown_event_is_ignored() {
-        assert_eq!(decide(&event("PreCompact"), Some(Status::Working)), None);
+        assert_eq!(
+            decide(
+                HookAgent::Claude,
+                &event("PreCompact"),
+                Some(Status::Working)
+            ),
+            None
+        );
     }
 
     #[test]
@@ -321,7 +417,7 @@ mod tests {
             agent_id: Some("a1".into()),
             ..event("Stop")
         };
-        assert_eq!(decide(&e, Some(Status::Working)), None);
+        assert_eq!(decide(HookAgent::Claude, &e, Some(Status::Working)), None);
     }
 
     #[test]
@@ -413,7 +509,7 @@ mod tests {
             ("/Users/x/proj/", "proj"),
             ("/", "/"),
         ] {
-            let a = record(cwd).to_agent();
+            let a = record(cwd).to_agent("s");
             assert_eq!(a.workspace, workspace, "{cwd}");
             assert_eq!(a.name, "claude");
             assert_eq!(a.status, Status::Working);
@@ -427,6 +523,165 @@ mod tests {
             title: None,
             ..record("/x/y")
         };
-        assert_eq!(r.to_agent().title, "");
+        assert_eq!(r.to_agent("s").title, "");
+    }
+
+    #[test]
+    fn codex_prompt_starts_work_and_takes_the_title() {
+        let e = HookEvent {
+            prompt: Some("port the parser".into()),
+            ..event("UserPromptSubmit")
+        };
+        assert_eq!(
+            decide(HookAgent::Codex, &e, None),
+            Some(Action::Write {
+                status: Status::Working,
+                title: Some("port the parser".into())
+            })
+        );
+    }
+
+    #[test]
+    fn codex_permission_request_blocks() {
+        assert_eq!(codex("PermissionRequest", None), writes(Status::Blocked));
+    }
+
+    #[test]
+    fn codex_post_tool_use_resumes_only_a_working_or_blocked_session() {
+        for (current, expected) in [
+            (Some(Status::Working), writes(Status::Working)),
+            (Some(Status::Blocked), writes(Status::Working)),
+            (Some(Status::Done), None),
+            (Some(Status::Idle), None),
+            (None, None),
+        ] {
+            assert_eq!(codex("PostToolUse", current), expected, "{current:?}");
+        }
+    }
+
+    #[test]
+    fn codex_stop_means_done() {
+        assert_eq!(codex("Stop", Some(Status::Working)), writes(Status::Done));
+    }
+
+    #[test]
+    fn codex_interrupt_idles_where_claude_ignores_it() {
+        assert_eq!(
+            codex("Interrupt", Some(Status::Working)),
+            writes(Status::Idle)
+        );
+        assert_eq!(
+            decide(
+                HookAgent::Claude,
+                &event("Interrupt"),
+                Some(Status::Working)
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn codex_session_end_removes_the_record() {
+        assert_eq!(
+            codex("SessionEnd", Some(Status::Done)),
+            Some(Action::Remove)
+        );
+    }
+
+    #[test]
+    fn codex_session_start_idles_only_for_startup_clear_and_resume() {
+        for source in ["startup", "clear", "resume"] {
+            assert_eq!(
+                decide(HookAgent::Codex, &session_start(source), None),
+                writes(Status::Idle),
+                "{source}"
+            );
+        }
+        for source in ["compact", "fork"] {
+            assert_eq!(
+                decide(
+                    HookAgent::Codex,
+                    &session_start(source),
+                    Some(Status::Working)
+                ),
+                None,
+                "{source}"
+            );
+        }
+        assert_eq!(codex("SessionStart", None), None);
+    }
+
+    #[test]
+    fn codex_ignores_events_only_claude_has() {
+        assert_eq!(
+            decide(
+                HookAgent::Codex,
+                &notification("idle_prompt"),
+                Some(Status::Working)
+            ),
+            None
+        );
+        assert_eq!(codex("PostToolUseFailure", Some(Status::Working)), None);
+    }
+
+    #[test]
+    fn a_codex_subagent_event_is_ignored() {
+        let e = HookEvent {
+            agent_id: Some("a1".into()),
+            ..event("Stop")
+        };
+        assert_eq!(decide(HookAgent::Codex, &e, Some(Status::Working)), None);
+    }
+
+    #[test]
+    fn an_agent_name_parses_back_and_is_case_sensitive() {
+        for a in [HookAgent::Claude, HookAgent::Codex] {
+            assert_eq!(HookAgent::parse(a.as_str()), Some(a));
+            assert_eq!(a.process_name(), a.as_str());
+        }
+        assert_eq!(HookAgent::parse("cursor"), None);
+        assert_eq!(HookAgent::parse("Codex"), None);
+    }
+
+    #[test]
+    fn a_codex_record_survives_json_round_trip() {
+        let r = SessionRecord {
+            agent: HookAgent::Codex,
+            ..record("/x")
+        };
+        assert_eq!(SessionRecord::from_json(&r.to_json()), Ok(r));
+    }
+
+    #[test]
+    fn a_record_without_an_agent_key_is_claude() {
+        let json = r#"{"status":"done","cwd":"/x","updated_at":1}"#;
+        assert_eq!(
+            SessionRecord::from_json(json).unwrap().agent,
+            HookAgent::Claude
+        );
+    }
+
+    #[test]
+    fn a_record_with_a_null_agent_is_claude() {
+        let json = r#"{"status":"done","cwd":"/x","updated_at":1,"agent":null}"#;
+        assert_eq!(
+            SessionRecord::from_json(json).unwrap().agent,
+            HookAgent::Claude
+        );
+    }
+
+    #[test]
+    fn a_record_with_an_unknown_agent_is_rejected() {
+        let json = r#"{"status":"done","cwd":"/x","updated_at":1,"agent":"cursor"}"#;
+        assert!(SessionRecord::from_json(json).is_err());
+    }
+
+    #[test]
+    fn a_codex_record_makes_a_codex_agent() {
+        let r = SessionRecord {
+            agent: HookAgent::Codex,
+            ..record("/x/y")
+        };
+        assert_eq!(r.to_agent("s").name, "codex");
     }
 }

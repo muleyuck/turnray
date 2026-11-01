@@ -1,5 +1,5 @@
-//! The hook side of the Claude Code source: `turnray hook claude` turns one hook event
-//! from stdin into a session file under `sessions_dir()`.
+//! The hook side of the Claude Code and Codex sources: `turnray hook claude|codex` turns
+//! one hook event from stdin into a session file under `sessions_dir()`.
 
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
@@ -7,9 +7,11 @@ use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use agent_core::hook::{decide, valid_session_id, Action, HookEvent, SessionRecord, EMITTED};
+use agent_core::hook::{
+    decide, valid_session_id, Action, HookAgent, HookEvent, SessionRecord, EMITTED,
+};
 use agent_core::{Agent, DataSource, SourceError, Status};
 
 use crate::process::output_with_timeout;
@@ -18,10 +20,14 @@ use crate::process::output_with_timeout;
 /// large, but anything past this is not a hook event worth parsing.
 const MAX_INPUT: usize = 64 * 1024 * 1024;
 
-/// How many processes up from the hook to look for `claude`.
+/// How many processes up from the hook to look for the agent.
 const ANCESTOR_DEPTH: usize = 3;
 
 const PS_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// The whole owner lookup, from the start of the hook, so a slow `ps` cannot hold the
+/// agent's hook up.
+const OWNER_LOOKUP_BUDGET: Duration = Duration::from_secs(1);
 
 pub fn sessions_dir() -> Option<PathBuf> {
     let home = std::env::var_os("HOME")?;
@@ -36,11 +42,14 @@ pub fn write_event(
     now_ms: u64,
     owner: Option<(u32, String)>,
 ) -> Result<(), String> {
-    write_event_with(dir, input, now_ms, || owner)
+    write_event_with(dir, HookAgent::Claude, None, input, now_ms, || owner)
 }
 
+/// `thread_id` is Codex's `CODEX_THREAD_ID`; it is ignored for Claude.
 fn write_event_with(
     dir: &Path,
+    agent: HookAgent,
+    thread_id: Option<&str>,
     input: &[u8],
     now_ms: u64,
     owner: impl FnOnce() -> Option<(u32, String)>,
@@ -50,6 +59,9 @@ fn write_event_with(
     if !valid_session_id(&event.session_id) {
         return Err(format!("invalid session_id {:?}", event.session_id));
     }
+    if agent == HookAgent::Codex && is_nested_codex(thread_id, &event.session_id) {
+        return Ok(());
+    }
     let path = dir.join(format!("{}.json", event.session_id));
     let read = || {
         std::fs::read_to_string(&path)
@@ -57,7 +69,7 @@ fn write_event_with(
             .and_then(|text| SessionRecord::from_json(&text).ok())
     };
     let existing = read();
-    match decide(&event, existing.as_ref().map(|r| r.status)) {
+    match decide(agent, &event, existing.as_ref().map(|r| r.status)) {
         None => Ok(()),
         Some(Action::Remove) => match std::fs::remove_file(&path) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),
@@ -68,9 +80,18 @@ fn write_event_with(
             if existing.as_ref().is_some_and(|r| r.updated_at > now_ms) {
                 return Ok(());
             }
-            let (pid, pid_start) = match owner() {
-                Some((pid, start)) => (Some(pid), Some(start)),
-                None => (None, None),
+            // The owner does not change within a session, except that a resumed or restarted
+            // agent reuses the id under a new process, which `SessionStart` announces.
+            let inherited = existing
+                .as_ref()
+                .filter(|r| r.pid.is_some() && event.hook_event_name != "SessionStart")
+                .map(|r| (r.pid, r.pid_start.clone()));
+            let (pid, pid_start) = match inherited {
+                Some(owner) => owner,
+                None => match owner() {
+                    Some((pid, start)) => (Some(pid), Some(start)),
+                    None => (None, None),
+                },
             };
             // The owner lookup runs `ps`, long enough for a newer hook to land meanwhile.
             // Checking again narrows that window; there is no lock.
@@ -79,6 +100,7 @@ fn write_event_with(
                 return Ok(());
             }
             let record = SessionRecord {
+                agent,
                 status,
                 cwd: event.cwd,
                 title: title.or_else(|| existing.and_then(|r| r.title)),
@@ -114,19 +136,39 @@ fn write_atomic(dir: &Path, path: &Path, id: &str, text: &str) -> Result<(), Str
     Ok(())
 }
 
-pub fn run_hook() {
-    let herdr_env = std::env::var("HERDR_ENV").is_ok_and(|v| v == "1");
+/// A Codex run by another Codex (a subagent or `codex exec` inside a session) inherits
+/// `CODEX_THREAD_ID` from its parent but has a session of its own.
+fn is_nested_codex(thread_id: Option<&str>, session_id: &str) -> bool {
+    thread_id.is_some_and(|t| t != session_id)
+}
+
+/// What one `turnray hook <agent>` run knows besides stdin.
+struct Invocation {
+    agent: HookAgent,
+    thread_id: Option<String>,
+    herdr_env: bool,
+}
+
+pub fn run_hook(agent: HookAgent) {
+    let invocation = Invocation {
+        agent,
+        thread_id: std::env::var("CODEX_THREAD_ID").ok(),
+        herdr_env: std::env::var("HERDR_ENV").is_ok_and(|v| v == "1"),
+    };
+    let epoch = Instant::now();
+    let clock = || epoch.elapsed();
     let result = match sessions_dir() {
-        Some(dir) => handle(
+        Some(dir) => run(
             &dir,
             std::io::stdin().lock(),
-            herdr_env,
+            &invocation,
             now_ms(),
-            find_claude,
+            clock,
+            ps_ancestor,
             MAX_INPUT,
         ),
         None => {
-            // Still drain stdin, as handle would, so Claude is not left writing to a dead pipe.
+            // Still drain stdin, as handle would, so the agent is not left writing to a dead pipe.
             let _ = read_capped(std::io::stdin().lock(), MAX_INPUT);
             Err("HOME is not set".to_string())
         }
@@ -134,6 +176,30 @@ pub fn run_hook() {
     if let Err(e) = result {
         eprintln!("turnray hook: {e}");
     }
+}
+
+/// `handle` with the owner lookup bounded by `OWNER_LOOKUP_BUDGET` counted from the first
+/// reading of `clock`, taken before the input is read.
+fn run(
+    dir: &Path,
+    reader: impl Read,
+    invocation: &Invocation,
+    now_ms: u64,
+    clock: impl Fn() -> Duration,
+    lookup: impl FnMut(u32, Duration) -> Option<(u32, String, String)>,
+    cap: usize,
+) -> Result<(), String> {
+    let start = clock();
+    let owner = || {
+        find_owner_from(
+            std::os::unix::process::parent_id(),
+            invocation.agent.process_name(),
+            OWNER_LOOKUP_BUDGET,
+            || clock().saturating_sub(start),
+            lookup,
+        )
+    };
+    handle(dir, reader, invocation, now_ms, owner, cap)
 }
 
 fn now_ms() -> u64 {
@@ -145,17 +211,26 @@ fn now_ms() -> u64 {
 fn handle(
     dir: &Path,
     reader: impl Read,
-    herdr_env: bool,
+    invocation: &Invocation,
     now_ms: u64,
     owner: impl FnOnce() -> Option<(u32, String)>,
     cap: usize,
 ) -> Result<(), String> {
-    // Read to the end first: a Claude writing to a pipe nobody reads blocks or gets EPIPE.
+    // Read to the end first: an agent writing to a pipe nobody reads blocks or gets EPIPE.
     let input = read_capped(reader, cap).ok_or("input too large")?;
-    if herdr_env {
+    // Codex's hooks run in the environment of its app-server daemon, which can carry
+    // HERDR_ENV=1 for a Codex used outside herdr, so only Claude can trust it.
+    if invocation.herdr_env && invocation.agent == HookAgent::Claude {
         return Ok(());
     }
-    write_event_with(dir, &input, now_ms, owner)
+    write_event_with(
+        dir,
+        invocation.agent,
+        invocation.thread_id.as_deref(),
+        &input,
+        now_ms,
+        owner,
+    )
 }
 
 fn read_capped(mut reader: impl Read, cap: usize) -> Option<Vec<u8>> {
@@ -177,13 +252,8 @@ fn read_capped(mut reader: impl Read, cap: usize) -> Option<Vec<u8>> {
     (!over).then_some(kept)
 }
 
-/// The nearest `claude` among the hook's ancestors, as (pid, lstart).
-fn find_claude() -> Option<(u32, String)> {
-    find_claude_from(std::os::unix::process::parent_id(), ps_ancestor)
-}
-
-/// (ppid, comm, lstart) of `pid` from `ps`.
-fn ps_ancestor(pid: u32) -> Option<(u32, String, String)> {
+/// (ppid, comm, lstart) of `pid` from `ps`, which is killed after `timeout`.
+fn ps_ancestor(pid: u32, timeout: Duration) -> Option<(u32, String, String)> {
     let out = output_with_timeout(
         Command::new("ps").env("LC_ALL", "C").args([
             "-o",
@@ -191,20 +261,31 @@ fn ps_ancestor(pid: u32) -> Option<(u32, String, String)> {
             "-p",
             &pid.to_string(),
         ]),
-        PS_TIMEOUT,
+        timeout,
     )
     .ok()?;
     parse_ps_ancestor(&String::from_utf8_lossy(&out.stdout))
 }
 
-fn find_claude_from(
+/// The nearest ancestor of `start` (itself included) whose executable is called `name`, as
+/// (pid, lstart). `lookup` gets the time left of `budget` as its deadline; once none is
+/// left the search ends.
+fn find_owner_from(
     start: u32,
-    lookup: impl Fn(u32) -> Option<(u32, String, String)>,
+    name: &str,
+    budget: Duration,
+    elapsed: impl Fn() -> Duration,
+    mut lookup: impl FnMut(u32, Duration) -> Option<(u32, String, String)>,
 ) -> Option<(u32, String)> {
     let mut pid = start;
     for _ in 0..ANCESTOR_DEPTH {
-        let (ppid, comm, lstart) = lookup(pid)?;
-        if Path::new(&comm).file_name().is_some_and(|n| n == "claude") {
+        let left = budget.checked_sub(elapsed()).filter(|d| !d.is_zero())?;
+        let (ppid, comm, lstart) = lookup(pid, left)?;
+        // A lookup that ran past the deadline gives no answer, even a matching one.
+        if elapsed() >= budget {
+            return None;
+        }
+        if Path::new(&comm).file_name().is_some_and(|n| n == name) {
             return Some((pid, lstart));
         }
         pid = ppid;
@@ -223,7 +304,7 @@ fn parse_ps_ancestor(line: &str) -> Option<(u32, String, String)> {
     Some((ppid, fields[1..split].join(" "), fields[split..].join(" ")))
 }
 
-/// A record with no owner (`claude` was not found among the hook's ancestors) can only
+/// A record with no owner (the agent was not found among the hook's ancestors) can only
 /// age out.
 const NO_OWNER_TTL_MS: u64 = 24 * 60 * 60 * 1000;
 
@@ -297,7 +378,10 @@ impl HookSource {
                 };
                 !(dead && remove_if_unchanged(path, r.updated_at))
             })
-            .map(|(_, r)| r.to_agent())
+            .map(|(path, r)| {
+                let id = path.file_stem().map(|s| s.to_string_lossy());
+                r.to_agent(id.as_deref().unwrap_or_default())
+            })
             .collect()
     }
 
@@ -452,6 +536,18 @@ mod tests {
 
     const PROMPT: &str = r#","prompt":"Fix the bug""#;
 
+    fn invocation(agent: HookAgent, thread_id: Option<&str>, herdr_env: bool) -> Invocation {
+        Invocation {
+            agent,
+            thread_id: thread_id.map(Into::into),
+            herdr_env,
+        }
+    }
+
+    fn claude(herdr_env: bool) -> Invocation {
+        invocation(HookAgent::Claude, None, herdr_env)
+    }
+
     #[test]
     fn a_prompt_writes_a_working_record_with_title_cwd_time_and_owner() {
         let t = TempDir::new("prompt");
@@ -465,6 +561,7 @@ mod tests {
         assert_eq!(
             record(&t.path()),
             SessionRecord {
+                agent: HookAgent::Claude,
                 status: Status::Working,
                 cwd: "/Users/x/proj".into(),
                 title: Some("Fix the bug".into()),
@@ -573,9 +670,24 @@ mod tests {
         let input = event("Stop", "");
         let mut reader = Cursor::new(input.clone());
         let owner = || -> Option<(u32, String)> { panic!("ps must not run") };
-        handle(&t.path(), &mut reader, true, 1_000, owner, 1024).unwrap();
+        handle(&t.path(), &mut reader, &claude(true), 1_000, owner, 1024).unwrap();
         assert!(entries(&t.path()).is_empty());
         assert_eq!(reader.position() as usize, input.len());
+    }
+
+    #[test]
+    fn herdr_env_does_not_stop_codex_from_writing() {
+        let t = TempDir::new("herdr-env-codex");
+        handle(
+            &t.path(),
+            Cursor::new(event("UserPromptSubmit", PROMPT)),
+            &invocation(HookAgent::Codex, Some("abc-123"), true),
+            1_000,
+            owner,
+            1024,
+        )
+        .unwrap();
+        assert_eq!(entries(&t.path()), vec!["abc-123.json"]);
     }
 
     #[test]
@@ -586,7 +698,7 @@ mod tests {
             "Notification",
             r#","notification_type":"auth_success""#,
         ));
-        handle(&t.path(), reader, false, 1_000, owner, 1024).unwrap();
+        handle(&t.path(), reader, &claude(false), 1_000, owner, 1024).unwrap();
     }
 
     #[test]
@@ -595,7 +707,7 @@ mod tests {
         handle(
             &t.path(),
             Cursor::new(event("Stop", "")),
-            false,
+            &claude(false),
             1_000,
             owner,
             1024,
@@ -623,19 +735,22 @@ mod tests {
     #[test]
     fn a_newer_record_written_during_the_owner_lookup_is_not_overwritten() {
         let t = TempDir::new("race");
-        write_event(
-            &t.path(),
-            &event("UserPromptSubmit", PROMPT),
-            1_000,
-            owner(),
-        )
-        .unwrap();
+        // No owner yet, so the PostToolUse below has to look one up.
+        write_event(&t.path(), &event("UserPromptSubmit", PROMPT), 1_000, None).unwrap();
         let dir = t.path();
         let concurrent_stop = || {
             write_event(&dir, &event("Stop", ""), 9_000, None).unwrap();
             owner()
         };
-        write_event_with(&dir, &event("PostToolUse", ""), 2_000, concurrent_stop).unwrap();
+        write_event_with(
+            &dir,
+            HookAgent::Claude,
+            None,
+            &event("PostToolUse", ""),
+            2_000,
+            concurrent_stop,
+        )
+        .unwrap();
         let r = record(&dir);
         assert_eq!((r.status, r.updated_at), (Status::Done, 9_000));
     }
@@ -665,29 +780,51 @@ mod tests {
         let t = TempDir::new("over-cap");
         let input = event("Stop", "");
         let cap = input.len() - 1;
-        assert!(handle(&t.path(), Cursor::new(input), false, 1_000, owner, cap).is_err());
+        assert!(handle(
+            &t.path(),
+            Cursor::new(input),
+            &claude(false),
+            1_000,
+            owner,
+            cap
+        )
+        .is_err());
         assert!(entries(&t.path()).is_empty());
     }
 
     /// A process table of (pid, ppid, comm); lstart is derived from the pid. Every lookup
     /// is recorded in `asked`.
-    fn walk(
+    fn walk_for(
+        name: &str,
         start: u32,
         table: &[(u32, u32, &str)],
     ) -> (Option<(u32, String)>, std::cell::RefCell<Vec<u32>>) {
         let asked = std::cell::RefCell::new(Vec::new());
-        let found = find_claude_from(start, |pid| {
-            asked.borrow_mut().push(pid);
-            table
-                .iter()
-                .find(|(p, _, _)| *p == pid)
-                .map(|(p, ppid, comm)| (*ppid, comm.to_string(), format!("lstart-{p}")))
-        });
+        let found = find_owner_from(
+            start,
+            name,
+            Duration::from_secs(1),
+            Duration::default,
+            |pid, _| {
+                asked.borrow_mut().push(pid);
+                table
+                    .iter()
+                    .find(|(p, _, _)| *p == pid)
+                    .map(|(p, ppid, comm)| (*ppid, comm.to_string(), format!("lstart-{p}")))
+            },
+        );
         (found, asked)
     }
 
+    fn walk(
+        start: u32,
+        table: &[(u32, u32, &str)],
+    ) -> (Option<(u32, String)>, std::cell::RefCell<Vec<u32>>) {
+        walk_for("claude", start, table)
+    }
+
     #[test]
-    fn find_claude_from_finds_claude_behind_the_plugins_sh() {
+    fn find_owner_from_finds_claude_behind_the_plugins_sh() {
         let table = [(300, 200, "sh"), (200, 100, "claude"), (100, 1, "zsh")];
         let (found, asked) = walk(300, &table);
         assert_eq!(found, Some((200, "lstart-200".to_string())));
@@ -695,20 +832,20 @@ mod tests {
     }
 
     #[test]
-    fn find_claude_from_finds_claude_as_the_direct_parent() {
+    fn find_owner_from_finds_claude_as_the_direct_parent() {
         let (found, asked) = walk(200, &[(200, 100, "claude")]);
         assert_eq!(found, Some((200, "lstart-200".to_string())));
         assert_eq!(*asked.borrow(), vec![200]);
     }
 
     #[test]
-    fn find_claude_from_matches_the_basename_of_a_full_path() {
+    fn find_owner_from_matches_the_basename_of_a_full_path() {
         let (found, _) = walk(200, &[(200, 100, "/opt/homebrew/bin/claude")]);
         assert_eq!(found, Some((200, "lstart-200".to_string())));
     }
 
     #[test]
-    fn find_claude_from_gives_up_after_the_ancestor_depth() {
+    fn find_owner_from_gives_up_after_the_ancestor_depth() {
         let table = [
             (4, 3, "sh"),
             (3, 2, "zsh"),
@@ -721,7 +858,7 @@ mod tests {
     }
 
     #[test]
-    fn find_claude_from_returns_none_when_a_lookup_fails_midway() {
+    fn find_owner_from_returns_none_when_a_lookup_fails_midway() {
         // 100 is missing from the table, though claude sits above it.
         let table = [(300, 200, "sh"), (200, 100, "zsh"), (99, 1, "claude")];
         let (found, asked) = walk(300, &table);
@@ -743,6 +880,296 @@ mod tests {
         assert_eq!(parse_ps_ancestor("   \n"), None);
     }
 
+    #[test]
+    fn find_owner_from_finds_codex_behind_the_plugins_sh() {
+        let table = [(300, 200, "sh"), (200, 100, "codex"), (100, 1, "zsh")];
+        let (found, _) = walk_for("codex", 300, &table);
+        assert_eq!(found, Some((200, "lstart-200".to_string())));
+    }
+
+    #[test]
+    fn find_owner_from_does_not_take_another_agent_for_the_owner() {
+        let table = [(300, 200, "sh"), (200, 100, "codex"), (100, 1, "zsh")];
+        let (found, _) = walk_for("claude", 300, &table);
+        assert_eq!(found, None);
+    }
+
+    #[test]
+    fn find_owner_from_stops_when_the_budget_runs_out_between_lookups() {
+        let table = [(300, 200, "sh"), (200, 100, "claude")];
+        let clock = std::cell::Cell::new(Duration::ZERO);
+        let asked = std::cell::RefCell::new(Vec::new());
+        let found = find_owner_from(
+            300,
+            "claude",
+            Duration::from_millis(100),
+            || clock.get(),
+            |pid, _| {
+                asked.borrow_mut().push(pid);
+                // The first lookup takes the whole budget.
+                clock.set(Duration::from_millis(100));
+                table
+                    .iter()
+                    .find(|(p, _, _)| *p == pid)
+                    .map(|(p, ppid, comm)| (*ppid, comm.to_string(), format!("lstart-{p}")))
+            },
+        );
+        assert_eq!(found, None);
+        assert_eq!(*asked.borrow(), vec![300]);
+    }
+
+    #[test]
+    fn find_owner_from_drops_a_match_found_after_the_deadline() {
+        let clock = std::cell::Cell::new(Duration::from_millis(900));
+        let found = find_owner_from(
+            200,
+            "claude",
+            Duration::from_secs(1),
+            || clock.get(),
+            |pid, _| {
+                clock.set(Duration::from_millis(1_100));
+                Some((1, "claude".to_string(), format!("lstart-{pid}")))
+            },
+        );
+        assert_eq!(found, None);
+    }
+
+    #[test]
+    fn find_owner_from_passes_each_lookup_the_time_left() {
+        let clock = std::cell::Cell::new(Duration::from_millis(100));
+        let left = std::cell::RefCell::new(Vec::new());
+        let found = find_owner_from(
+            3,
+            "claude",
+            Duration::from_millis(1_000),
+            || clock.get(),
+            |pid, remaining| {
+                left.borrow_mut().push(remaining);
+                clock.set(clock.get() + Duration::from_millis(300));
+                Some((pid - 1, "sh".to_string(), "x".to_string()))
+            },
+        );
+        assert_eq!(found, None);
+        assert_eq!(
+            *left.borrow(),
+            vec![
+                Duration::from_millis(900),
+                Duration::from_millis(600),
+                Duration::from_millis(300)
+            ]
+        );
+    }
+
+    #[test]
+    fn nested_codex_is_a_thread_id_other_than_the_session_id() {
+        assert!(!is_nested_codex(None, "s1"));
+        assert!(!is_nested_codex(Some("s1"), "s1"));
+        assert!(is_nested_codex(Some("parent"), "s1"));
+    }
+
+    fn write_codex(
+        dir: &Path,
+        thread_id: Option<&str>,
+        input: &[u8],
+        now_ms: u64,
+        owner: impl FnOnce() -> Option<(u32, String)>,
+    ) {
+        write_event_with(dir, HookAgent::Codex, thread_id, input, now_ms, owner).unwrap();
+    }
+
+    #[test]
+    fn a_codex_prompt_writes_a_record_that_shows_as_codex() {
+        let t = TempDir::new("codex-prompt");
+        handle(
+            &t.path(),
+            Cursor::new(event("UserPromptSubmit", PROMPT)),
+            &invocation(HookAgent::Codex, Some("abc-123"), false),
+            1_000,
+            owner,
+            1024,
+        )
+        .unwrap();
+        let r = record(&t.path());
+        assert_eq!((r.agent, r.status), (HookAgent::Codex, Status::Working));
+        assert_eq!(r.to_agent("s").name, "codex");
+    }
+
+    #[test]
+    fn a_nested_codex_writes_nothing_but_its_input_is_still_read() {
+        let t = TempDir::new("codex-nested");
+        let input = event("UserPromptSubmit", PROMPT);
+        let mut reader = Cursor::new(input.clone());
+        let panics = || -> Option<(u32, String)> { panic!("ps must not run") };
+        handle(
+            &t.path(),
+            &mut reader,
+            &invocation(HookAgent::Codex, Some("parent-thread"), false),
+            1_000,
+            panics,
+            1024,
+        )
+        .unwrap();
+        assert!(entries(&t.0).is_empty());
+        assert_eq!(reader.position() as usize, input.len());
+    }
+
+    #[test]
+    fn claude_ignores_a_thread_id_that_differs_from_its_session() {
+        let t = TempDir::new("claude-thread");
+        handle(
+            &t.path(),
+            Cursor::new(event("Stop", "")),
+            &invocation(HookAgent::Claude, Some("other"), false),
+            1_000,
+            owner,
+            1024,
+        )
+        .unwrap();
+        assert_eq!(record(&t.path()).status, Status::Done);
+    }
+
+    #[test]
+    fn a_late_codex_post_tool_use_does_not_undo_done_or_idle() {
+        let t = TempDir::new("codex-late-post");
+        let thread = Some("abc-123");
+        write_codex(
+            &t.path(),
+            thread,
+            &event("UserPromptSubmit", PROMPT),
+            1_000,
+            owner,
+        );
+        write_codex(&t.path(), thread, &event("Stop", ""), 2_000, owner);
+        write_codex(&t.path(), thread, &event("PostToolUse", ""), 3_000, owner);
+        assert_eq!(record(&t.path()).status, Status::Done);
+
+        write_codex(&t.path(), thread, &event("Interrupt", ""), 4_000, owner);
+        write_codex(&t.path(), thread, &event("PostToolUse", ""), 5_000, owner);
+        assert_eq!(record(&t.path()).status, Status::Idle);
+    }
+
+    #[test]
+    fn a_codex_post_tool_use_after_a_permission_request_is_working() {
+        let t = TempDir::new("codex-permission");
+        let thread = Some("abc-123");
+        write_codex(
+            &t.path(),
+            thread,
+            &event("PermissionRequest", ""),
+            1_000,
+            owner,
+        );
+        assert_eq!(record(&t.path()).status, Status::Blocked);
+        write_codex(&t.path(), thread, &event("PostToolUse", ""), 2_000, owner);
+        assert_eq!(record(&t.path()).status, Status::Working);
+    }
+
+    /// A reader whose every `read` moves the shared fake clock on.
+    struct SlowReader<'a> {
+        inner: Cursor<Vec<u8>>,
+        clock: &'a std::cell::Cell<Duration>,
+        per_read: Duration,
+    }
+
+    impl Read for SlowReader<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            self.clock.set(self.clock.get() + self.per_read);
+            self.inner.read(buf)
+        }
+    }
+
+    #[test]
+    fn time_spent_reading_stdin_counts_against_the_owner_lookup_budget() {
+        let t = TempDir::new("budget-spent");
+        let clock = std::cell::Cell::new(Duration::from_secs(50));
+        let lookups = std::cell::Cell::new(0);
+        let reader = SlowReader {
+            inner: Cursor::new(event("Stop", "")),
+            clock: &clock,
+            // Two reads (the data, then EOF) spend exactly the budget: none is left.
+            per_read: OWNER_LOOKUP_BUDGET / 2,
+        };
+        run(
+            &t.path(),
+            reader,
+            &claude(false),
+            1_000,
+            || clock.get(),
+            |_, _| {
+                lookups.set(lookups.get() + 1);
+                None
+            },
+            1024,
+        )
+        .unwrap();
+        assert_eq!(lookups.get(), 0);
+        let r = record(&t.path());
+        assert_eq!((r.pid, r.pid_start), (None, None));
+    }
+
+    #[test]
+    fn a_record_with_an_owner_keeps_it_without_another_lookup() {
+        let t = TempDir::new("owner-inherited");
+        write_event(
+            &t.path(),
+            &event("UserPromptSubmit", PROMPT),
+            1_000,
+            owner(),
+        )
+        .unwrap();
+        let panics = || -> Option<(u32, String)> { panic!("ps must not run") };
+        write_event_with(
+            &t.path(),
+            HookAgent::Claude,
+            None,
+            &event("PostToolUse", ""),
+            2_000,
+            panics,
+        )
+        .unwrap();
+        let r = record(&t.path());
+        assert_eq!(r.updated_at, 2_000);
+        assert_eq!(
+            (r.pid, r.pid_start),
+            (Some(4242), Some("Thu Oct 29 18:19:06 2026".to_string()))
+        );
+    }
+
+    #[test]
+    fn session_start_replaces_the_owner_of_a_record_that_has_one() {
+        let t = TempDir::new("owner-session-start");
+        write_event(
+            &t.path(),
+            &event("UserPromptSubmit", PROMPT),
+            1_000,
+            owner(),
+        )
+        .unwrap();
+        let new_owner = || Some((7, "Fri Oct 30 01:02:03 2026".to_string()));
+        write_event_with(
+            &t.path(),
+            HookAgent::Claude,
+            None,
+            &event("SessionStart", r#","source":"startup""#),
+            2_000,
+            new_owner,
+        )
+        .unwrap();
+        let r = record(&t.path());
+        assert_eq!(
+            (r.pid, r.pid_start),
+            (Some(7), Some("Fri Oct 30 01:02:03 2026".to_string()))
+        );
+    }
+
+    #[test]
+    fn a_record_without_an_owner_gets_one_looked_up() {
+        let t = TempDir::new("owner-missing");
+        write_event(&t.path(), &event("UserPromptSubmit", PROMPT), 1_000, None).unwrap();
+        write_event(&t.path(), &event("PostToolUse", ""), 2_000, owner()).unwrap();
+        assert_eq!(record(&t.path()).pid, Some(4242));
+    }
+
     fn put(dir: &Path, name: &str, r: &SessionRecord) {
         std::fs::create_dir_all(dir).unwrap();
         std::fs::write(dir.join(name), r.to_json()).unwrap();
@@ -750,6 +1177,7 @@ mod tests {
 
     fn rec(updated_at: u64, pid: Option<u32>, pid_start: Option<&str>) -> SessionRecord {
         SessionRecord {
+            agent: HookAgent::Claude,
             status: Status::Working,
             cwd: "/Users/x/proj".into(),
             title: None,
@@ -795,9 +1223,22 @@ mod tests {
                 name: "claude".into(),
                 workspace: "proj".into(),
                 title: "Fix the bug".into(),
+                session_id: Some("a".into()),
             }]
         );
         assert_eq!(entries(&t.path()), vec!["a.json"]);
+    }
+
+    #[test]
+    fn a_listed_session_carries_its_file_name_without_json_as_session_id() {
+        let t = TempDir::new("read-session-id");
+        let s = source_with(&t, &[("abc-123.json", rec(1_000, None, None))]);
+        let ids: Vec<_> = s
+            .fetch_at(2_000)
+            .into_iter()
+            .map(|a| a.session_id)
+            .collect();
+        assert_eq!(ids, vec![Some("abc-123".to_string())]);
     }
 
     #[test]
@@ -996,6 +1437,20 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/../../plugin/scripts/turnray-hook"
     );
+    const CODEX_HOOK_SCRIPT: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../plugin-codex/scripts/turnray-hook"
+    );
+
+    fn run_codex_hook_script(search: &str, input: &[u8]) -> (Option<i32>, Vec<u8>, bool) {
+        run_script_with(
+            CODEX_HOOK_SCRIPT,
+            |c| {
+                c.env("TURNRAY_HOOK_APP_DIRS", search);
+            },
+            input,
+        )
+    }
 
     /// A `<root>/<name>/turnray.app` whose turnray records its argument count, its
     /// arguments (one per line) and its stdin in `<root>/<name>/called-*`, prints to stdout
@@ -1003,12 +1458,17 @@ mod tests {
     /// spliced into its source. `protocol` is the `hook-protocol` content, or `None` for
     /// no such file.
     fn fake_app(root: &Path, name: &str, protocol: Option<&str>) -> PathBuf {
+        fake_app_marked(root, name, "hook-protocol", protocol)
+    }
+
+    /// `fake_app` with the protocol file called `marker`.
+    fn fake_app_marked(root: &Path, name: &str, marker: &str, protocol: Option<&str>) -> PathBuf {
         let dir = root.join(name);
         let app = dir.join("turnray.app");
         std::fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
         std::fs::create_dir_all(app.join("Contents/Resources")).unwrap();
         if let Some(protocol) = protocol {
-            std::fs::write(app.join("Contents/Resources/hook-protocol"), protocol).unwrap();
+            std::fs::write(app.join("Contents/Resources").join(marker), protocol).unwrap();
         }
         let bin = app.join("Contents/MacOS/turnray");
         std::fs::write(
@@ -1026,7 +1486,15 @@ mod tests {
         configure: impl FnOnce(&mut Command),
         input: &[u8],
     ) -> (Option<i32>, Vec<u8>, bool) {
-        let mut command = Command::new(HOOK_SCRIPT);
+        run_script_with(HOOK_SCRIPT, configure, input)
+    }
+
+    fn run_script_with(
+        script: &str,
+        configure: impl FnOnce(&mut Command),
+        input: &[u8],
+    ) -> (Option<i32>, Vec<u8>, bool) {
+        let mut command = Command::new(script);
         command
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped());
@@ -1172,6 +1640,143 @@ mod tests {
         let tmp = TempDir::new("hook-emptyvar");
         let dir = fake_app(&tmp.0, "Applications", Some("1\n"));
         let (code, stdout, _) = run_hook_script_with(
+            |c| {
+                c.env("TURNRAY_HOOK_APP_DIRS", "").env("HOME", &tmp.0);
+            },
+            b"{}",
+        );
+        assert_eq!(code, Some(0));
+        assert!(stdout.is_empty());
+        assert!(!dir.join("called-args").exists());
+    }
+
+    #[test]
+    fn turnray_codex_hook_without_an_app_exits_0_silently_and_drains_stdin() {
+        let tmp = TempDir::new("codex-none");
+        let empty = tmp.0.join("empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        let (code, stdout, drained) =
+            run_codex_hook_script(&joined(&[&empty]), &vec![b'x'; 1 << 20]);
+        assert_eq!(code, Some(0));
+        assert!(stdout.is_empty());
+        assert!(drained);
+    }
+
+    #[test]
+    fn turnray_codex_hook_ignores_an_app_with_only_the_claude_protocol_file() {
+        let tmp = TempDir::new("codex-claude-only");
+        let dir = fake_app(&tmp.0, "a", Some("1\n"));
+        let (code, stdout, _) = run_codex_hook_script(&joined(&[&dir]), b"{}");
+        assert_eq!(code, Some(0));
+        assert!(stdout.is_empty());
+        assert!(!dir.join("called-args").exists());
+    }
+
+    #[test]
+    fn turnray_codex_hook_ignores_an_app_with_another_protocol() {
+        let tmp = TempDir::new("codex-proto");
+        let dir = fake_app_marked(&tmp.0, "a", "hook-protocol-codex", Some("2\n"));
+        let (code, stdout, _) = run_codex_hook_script(&joined(&[&dir]), b"{}");
+        assert_eq!(code, Some(0));
+        assert!(stdout.is_empty());
+        assert!(!dir.join("called-args").exists());
+    }
+
+    #[test]
+    fn turnray_codex_hook_passes_stdin_to_hook_codex_and_hides_the_childs_result() {
+        let tmp = TempDir::new("codex-call");
+        let dir = fake_app_marked(&tmp.0, "a", "hook-protocol-codex", Some("1\n"));
+        let (code, stdout, _) = run_codex_hook_script(&joined(&[&dir]), b"{\"k\":\"v\"}");
+        assert_eq!(code, Some(0));
+        assert!(stdout.is_empty());
+        assert_eq!(
+            std::fs::read_to_string(dir.join("called-args")).unwrap(),
+            "2\nhook\ncodex\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("called-stdin")).unwrap(),
+            "{\"k\":\"v\"}"
+        );
+    }
+
+    #[test]
+    fn turnray_codex_hook_skips_an_app_whose_turnray_is_not_executable() {
+        let tmp = TempDir::new("codex-noexec");
+        let broken = fake_app_marked(&tmp.0, "broken", "hook-protocol-codex", Some("1\n"));
+        std::fs::set_permissions(
+            broken.join("turnray.app/Contents/MacOS/turnray"),
+            std::fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+        let valid = fake_app_marked(&tmp.0, "valid", "hook-protocol-codex", Some("1\n"));
+        let (code, _, _) = run_codex_hook_script(&joined(&[&broken, &valid]), b"{}");
+        assert_eq!(code, Some(0));
+        assert!(!broken.join("called-args").exists());
+        assert!(valid.join("called-args").exists());
+    }
+
+    const CODEX_MARKER: &str = "hook-protocol-codex";
+
+    #[test]
+    fn turnray_codex_hook_uses_only_the_first_matching_app() {
+        let tmp = TempDir::new("codex-first");
+        let skipped = fake_app_marked(&tmp.0, "skipped", CODEX_MARKER, Some("2\n"));
+        let first = fake_app_marked(&tmp.0, "first", CODEX_MARKER, Some("1\n"));
+        let second = fake_app_marked(&tmp.0, "second", CODEX_MARKER, Some("1\n"));
+        let (code, _, _) = run_codex_hook_script(&joined(&[&skipped, &first, &second]), b"{}");
+        assert_eq!(code, Some(0));
+        assert!(first.join("called-args").exists());
+        assert!(!second.join("called-args").exists());
+    }
+
+    #[test]
+    fn turnray_codex_hook_uses_a_search_entry_literally_without_globbing() {
+        let tmp = TempDir::new("codex-glob");
+        let sibling = fake_app_marked(&tmp.0, "g1", CODEX_MARKER, Some("1\n"));
+        let pattern = format!("{}/g*", tmp.0.display());
+        let (code, stdout, _) = run_codex_hook_script(&pattern, b"{}");
+        assert_eq!(code, Some(0));
+        assert!(stdout.is_empty());
+        assert!(!sibling.join("called-args").exists());
+    }
+
+    #[test]
+    fn turnray_codex_hook_finds_an_app_in_a_dir_with_a_space() {
+        let tmp = TempDir::new("codex-space");
+        let dir = fake_app_marked(&tmp.0, "with space", CODEX_MARKER, Some("1\n"));
+        let (code, _, _) = run_codex_hook_script(&joined(&[&dir]), b"{}");
+        assert_eq!(code, Some(0));
+        assert!(dir.join("called-args").exists());
+    }
+
+    #[test]
+    fn turnray_codex_hook_searches_home_applications_by_default() {
+        if real_app_installed() {
+            return;
+        }
+        let tmp = TempDir::new("codex-home");
+        let home = tmp.0.join("ho me");
+        let dir = fake_app_marked(&home, "Applications", CODEX_MARKER, Some("1\n"));
+        let (code, _, _) = run_script_with(
+            CODEX_HOOK_SCRIPT,
+            |c| {
+                c.env_remove("TURNRAY_HOOK_APP_DIRS").env("HOME", &home);
+            },
+            b"{}",
+        );
+        assert_eq!(code, Some(0));
+        assert!(dir.join("called-args").exists());
+    }
+
+    #[test]
+    fn turnray_codex_hook_searches_nothing_when_the_dirs_variable_is_empty() {
+        if real_app_installed() {
+            return;
+        }
+        let tmp = TempDir::new("codex-emptyvar");
+        let dir = fake_app_marked(&tmp.0, "Applications", CODEX_MARKER, Some("1\n"));
+        let (code, stdout, _) = run_script_with(
+            CODEX_HOOK_SCRIPT,
             |c| {
                 c.env("TURNRAY_HOOK_APP_DIRS", "").env("HOME", &tmp.0);
             },

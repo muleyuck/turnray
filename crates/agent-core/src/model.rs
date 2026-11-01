@@ -43,6 +43,9 @@ pub struct Agent {
     pub name: String,
     pub workspace: String,
     pub title: String,
+    /// The agent's own session id, when its source knows it. Only used to tell that two
+    /// sources report the same session; never displayed.
+    pub session_id: Option<String>,
 }
 
 #[cfg(test)]
