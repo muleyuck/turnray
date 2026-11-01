@@ -1,8 +1,33 @@
 use agent_core::{Agent, Settings, SourceError, Status, Style};
+use objc2::MainThreadMarker;
+use objc2_foundation::NSSize;
 use tray_icon::TrayIcon;
 
 use crate::panel::Panel;
 use crate::ui::{self, Dir, DisplayState, PanelContent, SettingsView, TrayImage, TrayView};
+
+/// The images are 36px tall for 18pt at 2x. tray-icon 0.26 draws an image as many points tall
+/// as it has pixels, up to 22, which would show them larger and blurred.
+const TRAY_ICON_HEIGHT: f64 = 18.0;
+
+fn fit_to_menu_bar(tray: &TrayIcon) {
+    let (Some(item), Some(mtm)) = (tray.ns_status_item(), MainThreadMarker::new()) else {
+        return;
+    };
+    let Some(button) = item.button(mtm) else {
+        return;
+    };
+    let Some(image) = button.image() else {
+        return;
+    };
+    let size = image.size();
+    if size.height > 0.0 {
+        image.setSize(NSSize::new(
+            size.width * TRAY_ICON_HEIGHT / size.height,
+            TRAY_ICON_HEIGHT,
+        ));
+    }
+}
 
 pub struct App {
     tray: Option<TrayIcon>,
@@ -51,7 +76,8 @@ impl App {
         // tray-icon keeps icon and title while hidden and applies them when the item
         // comes back, so they are updated before visibility. A hidden view carries no image
         // worth drawing (the full style's would be zero pixels wide), so it is skipped.
-        if view.visible && last.map(|l| &l.image) != Some(&view.image) {
+        let image_changed = view.visible && last.map(|l| &l.image) != Some(&view.image);
+        if image_changed {
             // set_icon alone drops the template flag that lets macOS tint the image.
             tray.set_icon_templated(Some(crate::tray_icon(&view.image)))
                 .expect("tray icon update");
@@ -82,8 +108,13 @@ impl App {
                 panel.fit();
             }
         }
+        let shown = view.visible && last.map(|l| l.visible) != Some(true);
         if last.map(|l| l.visible) != Some(view.visible) {
             tray.set_visible(view.visible).expect("tray visibility");
+        }
+        // Showing the item rebuilds it from the stored icon, at tray-icon's size again.
+        if image_changed || shown {
+            fit_to_menu_bar(tray);
         }
         self.last_view = Some(TrayView {
             // Keep the last image actually drawn, so a later visible view compares to it.
