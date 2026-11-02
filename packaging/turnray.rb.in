@@ -4,7 +4,7 @@ cask "turnray" do
 
   url "https://github.com/muleyuck/turnray/releases/download/v#{version}/turnray-#{version}.zip"
   name "turnray"
-  desc "Menu bar app that shows the status of AI agents from herdr, Claude Code or Codex hooks"
+  desc "Menu bar app that shows the status of herdr, Claude Code and Codex agents"
   homepage "https://github.com/muleyuck/turnray"
 
   depends_on :macos
