@@ -2,6 +2,7 @@ mod backend;
 mod herdr;
 mod hooks;
 mod images;
+mod kitty;
 mod login;
 mod menu;
 mod merged;
