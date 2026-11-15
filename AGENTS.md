@@ -26,7 +26,7 @@ A Cargo workspace with two crates:
 
 - `crates/agent-core` — logic with no GUI dependency: `Status` and `Agent` (`model.rs`),
   priority order (`priority.rs`), settings parsing (`settings.rs`), herdr's JSON
-  (`herdr.rs`), Claude Code hook events and session records (`hook.rs`) and the
+  (`herdr.rs`), kitty's `kitten @ ls` JSON (`kitty.rs`), Claude Code hook events and session records (`hook.rs`) and the
   `DataSource` trait (`source.rs`)
 - `crates/tray-app` — the macOS app:
   - `ui.rs` works out what to show (`TrayView`, `PanelContent`, `SettingsView`) from the
@@ -42,8 +42,10 @@ A Cargo workspace with two crates:
     runs a child with a deadline, a cap on its output and a process-group kill
   - `backend.rs` polls the source every second; `store.rs` saves the settings to
     `~/Library/Application Support/turnray/settings`
+  - `kitty.rs` finds `kitten` and kitty's sockets in the temp directory and runs `kitten @ ls`
+    on each (`KittySource`)
   - `hooks.rs` runs `turnray hook claude` (writes a session file) and reads those files back
-    as a data source, dropping stale sessions; `merged.rs` merges that source with herdr's
+    as a data source, dropping stale sessions; `merged.rs` merges herdr's, kitty's and that source's, dropping a repeated agent
   - `login.rs` turns launch at login on and off through `SMAppService` (macOS 13+, and
     only from the `.app`); macOS keeps that setting, not `store.rs`
 
@@ -55,7 +57,7 @@ A Cargo workspace with two crates:
   `.agents/plugins/marketplace.json` publishes it as `turnray@turnray`
 
 Data sources: the agent's own hook comes first. Add no per-terminal or per-multiplexer
-source besides `HerdrSource`.
+source besides `HerdrSource` and `KittySource`.
 
 The arguments and stdin of `turnray hook <agent>` are a compatibility promise with that
 agent's plugin, each with its own mark in `Contents/Resources` (set in the `Makefile`):
@@ -83,6 +85,8 @@ Changing `plugin-codex/` makes every user approve its hooks again in `/hooks`: r
 - Unit tests live in a `#[cfg(test)] mod tests` at the bottom of each file
 - herdr is never called from tests: `tray-app/src/herdr.rs` runs `fetch` against a fake
   `herdr` shell script written to a temp dir
+- kitty is never called from tests: `tray-app/src/kitty.rs` runs against a fake `kitten`
+  shell script
 
 - Hook tests use a temp dir and a fake `.app`, never the real `claude` or `~/.claude`.
   Tests that run the real `ps` fail inside a sandbox, so run `make test` outside one
