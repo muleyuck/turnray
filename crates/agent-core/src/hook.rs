@@ -211,6 +211,7 @@ impl SessionRecord {
             workspace: workspace.to_string(),
             title: self.title.clone().unwrap_or_default(),
             session_id: Some(session_id.to_string()),
+            pid: self.pid,
         }
     }
 }
@@ -515,6 +516,20 @@ mod tests {
             assert_eq!(a.status, Status::Working);
             assert_eq!(a.title, "fix the bug");
         }
+    }
+
+    #[test]
+    fn to_agent_carries_the_records_pid() {
+        assert_eq!(record("/x/y").to_agent("s").pid, Some(4242));
+    }
+
+    #[test]
+    fn to_agent_has_no_pid_when_the_record_has_none() {
+        let r = SessionRecord {
+            pid: None,
+            ..record("/x/y")
+        };
+        assert_eq!(r.to_agent("s").pid, None);
     }
 
     #[test]

@@ -82,6 +82,7 @@ mod tests {
             workspace: String::new(),
             title: String::new(),
             session_id: None,
+            pid: None,
         }
     }
 

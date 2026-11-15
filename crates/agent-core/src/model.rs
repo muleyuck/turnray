@@ -46,6 +46,9 @@ pub struct Agent {
     /// The agent's own session id, when its source knows it. Only used to tell that two
     /// sources report the same session; never displayed.
     pub session_id: Option<String>,
+    /// The agent process's pid, when its source knows it. Like `session_id`, only used to
+    /// tell that two sources report the same agent; never displayed.
+    pub pid: Option<u32>,
 }
 
 #[cfg(test)]

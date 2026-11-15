@@ -1224,6 +1224,7 @@ mod tests {
                 workspace: "proj".into(),
                 title: "Fix the bug".into(),
                 session_id: Some("a".into()),
+                pid: Some(pid),
             }]
         );
         assert_eq!(entries(&t.path()), vec!["a.json"]);

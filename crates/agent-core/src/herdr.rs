@@ -111,6 +111,7 @@ pub fn parse_agents(json: &str, labels: &HashMap<String, String>) -> Result<Vec<
                 .agent_session
                 .and_then(|s| s.value)
                 .filter(|v| !v.is_empty()),
+            pid: None,
         })
         .collect())
 }
@@ -145,6 +146,7 @@ mod tests {
                     workspace: "react-vue-comparison".into(),
                     title: "Vue学習ロードマップ作成".into(),
                     session_id: None,
+                    pid: None,
                 },
                 Agent {
                     status: Status::Working,
@@ -152,6 +154,7 @@ mod tests {
                     workspace: "turnray".into(),
                     title: "Herdr agents menubar design".into(),
                     session_id: None,
+                    pid: None,
                 },
             ]
         );

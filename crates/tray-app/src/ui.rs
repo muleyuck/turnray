@@ -277,6 +277,7 @@ mod tests {
             workspace: workspace.into(),
             title: title.into(),
             session_id: None,
+            pid: None,
         }
     }
 

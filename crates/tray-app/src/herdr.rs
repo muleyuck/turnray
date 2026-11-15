@@ -262,6 +262,7 @@ mod tests {
                     workspace: "turnray".into(),
                     title: "Fix & ship".into(),
                     session_id: None,
+                    pid: None,
                 },
                 Agent {
                     status: Status::Working,
@@ -269,6 +270,7 @@ mod tests {
                     workspace: "scoptray".into(),
                     title: "Refactor".into(),
                     session_id: None,
+                    pid: None,
                 },
             ]
         );

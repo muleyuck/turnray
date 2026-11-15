@@ -81,12 +81,14 @@ mod tests {
             workspace: String::new(),
             title: String::new(),
             session_id: None,
+            pid: None,
         }
     }
 
     fn session(name: &str, id: Option<&str>) -> Agent {
         Agent {
             session_id: id.map(Into::into),
+            pid: None,
             ..agent(name)
         }
     }
