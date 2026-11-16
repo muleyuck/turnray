@@ -81,8 +81,7 @@ mod tests {
             name: name.into(),
             workspace: String::new(),
             title: String::new(),
-            session_id: None,
-            pid: None,
+            identities: vec![],
         }
     }
 

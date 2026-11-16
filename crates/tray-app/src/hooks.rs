@@ -482,6 +482,7 @@ fn parse_liveness(exit_code: i32, stdout: &str, stderr: &str) -> Liveness {
 mod tests {
     use super::*;
     use agent_core::hook::SessionRecord;
+    use agent_core::Identity;
     use agent_core::Status;
     use std::io::Cursor;
     use std::os::unix::fs::PermissionsExt;
@@ -1223,23 +1224,22 @@ mod tests {
                 name: "claude".into(),
                 workspace: "proj".into(),
                 title: "Fix the bug".into(),
-                session_id: Some("a".into()),
-                pid: Some(pid),
+                identities: vec![Identity::Session("a".into()), Identity::Pid(pid)],
             }]
         );
         assert_eq!(entries(&t.path()), vec!["a.json"]);
     }
 
     #[test]
-    fn a_listed_session_carries_its_file_name_without_json_as_session_id() {
+    fn a_listed_session_is_named_by_its_file_name_without_json() {
         let t = TempDir::new("read-session-id");
         let s = source_with(&t, &[("abc-123.json", rec(1_000, None, None))]);
         let ids: Vec<_> = s
             .fetch_at(2_000)
             .into_iter()
-            .map(|a| a.session_id)
+            .map(|a| a.identities)
             .collect();
-        assert_eq!(ids, vec![Some("abc-123".to_string())]);
+        assert_eq!(ids, vec![vec![Identity::Session("abc-123".into())]]);
     }
 
     #[test]

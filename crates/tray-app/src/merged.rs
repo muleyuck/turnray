@@ -31,16 +31,15 @@ impl MergedSource {
     }
 }
 
-/// Drops the cards of `later` that `earlier` already shows: the same session id or the
-/// same agent pid. Cards within `later` are never compared with each other.
+/// Drops the cards of `later` that `earlier` already shows: any identity in common.
+/// Cards within `later` are never compared with each other.
 fn without_seen(later: Vec<Agent>, earlier: &[Agent]) -> Vec<Agent> {
     later
         .into_iter()
         .filter(|l| {
-            !earlier.iter().any(|e| {
-                (l.session_id.is_some() && l.session_id == e.session_id)
-                    || (l.pid.is_some() && l.pid == e.pid)
-            })
+            !earlier
+                .iter()
+                .any(|e| l.identities.iter().any(|i| e.identities.contains(i)))
         })
         .collect()
 }
@@ -76,6 +75,7 @@ impl DataSource for MergedSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agent_core::Identity;
 
     struct Fake {
         result: Result<Vec<Agent>, SourceError>,
@@ -97,15 +97,16 @@ mod tests {
             name: name.into(),
             workspace: String::new(),
             title: String::new(),
-            session_id: None,
-            pid: None,
+            identities: vec![],
         }
     }
 
     fn session(name: &str, id: Option<&str>) -> Agent {
         Agent {
-            session_id: id.map(Into::into),
-            pid: None,
+            identities: id
+                .map(|s| Identity::Session(s.into()))
+                .into_iter()
+                .collect(),
             ..agent(name)
         }
     }
@@ -251,7 +252,10 @@ mod tests {
     }
 
     fn proc(name: &str, pid: Option<u32>) -> Agent {
-        Agent { pid, ..agent(name) }
+        Agent {
+            identities: pid.map(Identity::Pid).into_iter().collect(),
+            ..agent(name)
+        }
     }
 
     #[test]

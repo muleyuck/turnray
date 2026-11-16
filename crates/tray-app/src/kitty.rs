@@ -215,7 +215,7 @@ mod tests {
         let agents =
             KittySource::new().fetch_from(&kitten, &sockets(&d.0, &["kitty-a", "kitty-b"]), LONG);
         assert_eq!(workspaces(&agents), ["first", "second"]);
-        assert_eq!(agents[0].pid, Some(42));
+        assert_eq!(agents[0].identities, [agent_core::Identity::Pid(42)]);
     }
 
     #[test]

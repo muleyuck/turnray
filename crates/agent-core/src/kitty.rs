@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Deserializer};
 
 use crate::hook::HookAgent;
-use crate::model::{Agent, Status};
+use crate::model::{Agent, Identity, Status};
 
 /// The statuses kitty's records map to: `error` shows as Done, so Unknown never appears.
 pub const EMITTED: &[Status] = &[Status::Blocked, Status::Done, Status::Idle, Status::Working];
@@ -137,8 +137,11 @@ fn window_agents(window: &Window, out: &mut Vec<Agent>) {
             name: agent.as_str().to_string(),
             workspace: last_part(cwd).to_string(),
             title: title.to_string(),
-            session_id: None,
-            pid: process.and_then(|p| p.pid),
+            identities: process
+                .and_then(|p| p.pid)
+                .map(Identity::Pid)
+                .into_iter()
+                .collect(),
         });
     }
 }
@@ -303,8 +306,7 @@ mod tests {
             name: name.into(),
             workspace: "proj".into(),
             title: title.into(),
-            session_id: None,
-            pid: Some(pid),
+            identities: vec![Identity::Pid(pid)],
         }
     }
 
@@ -432,7 +434,7 @@ mod tests {
             "program_status":[{"app":"claude-code","state":"idle"}]"#,
         );
         let agents = parse_ls(&json).unwrap();
-        assert_eq!(agents[0].pid, None);
+        assert_eq!(agents[0].identities, []);
         assert_eq!(agents[0].workspace, "other");
     }
 
@@ -451,7 +453,7 @@ mod tests {
             r#""cwd":"/Users/x/w","foreground_processes":[{"cmdline":["/opt/notclaude"],"cwd":"/Users/x/p","pid":5}],
             "program_status":[{"app":"claude-code","state":"idle"}]"#,
         );
-        assert_eq!(parse_ls(&json).unwrap()[0].pid, None);
+        assert_eq!(parse_ls(&json).unwrap()[0].identities, []);
     }
 
     #[test]
@@ -468,7 +470,7 @@ mod tests {
              "program_status":[{"app":"claude-code","state":"idle"}]}]}]},{"tabs":null}]"#;
         let agents = parse_ls(json).unwrap();
         assert_eq!(agents.len(), 1);
-        assert_eq!(agents[0].pid, Some(9));
+        assert_eq!(agents[0].identities, [Identity::Pid(9)]);
     }
 
     #[test]
