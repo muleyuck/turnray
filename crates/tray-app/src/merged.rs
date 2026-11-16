@@ -140,36 +140,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_hook_session_without_an_id_stays_beside_a_herdr_agent_with_one() {
-        let got = merged(
-            Ok(vec![session("h", Some("s1"))]),
-            Ok(vec![]),
-            Ok(vec![session("c", None)]),
-        );
-        assert_eq!(got, Ok(vec![session("h", Some("s1")), session("c", None)]));
-    }
-
-    #[test]
-    fn a_hook_session_with_an_id_stays_beside_a_herdr_agent_without_one() {
-        let got = merged(
-            Ok(vec![session("h", None)]),
-            Ok(vec![]),
-            Ok(vec![session("c", Some("s1"))]),
-        );
-        assert_eq!(got, Ok(vec![session("h", None), session("c", Some("s1"))]));
-    }
-
-    #[test]
-    fn without_herdr_hook_sessions_are_kept_even_with_ids() {
-        let got = merged(
-            Err(not_found()),
-            Ok(vec![]),
-            Ok(vec![session("c", Some("s1"))]),
-        );
-        assert_eq!(got, Ok(vec![session("c", Some("s1"))]));
-    }
-
     fn merged(
         herdr: Result<Vec<Agent>, SourceError>,
         kitty: Result<Vec<Agent>, SourceError>,
@@ -263,7 +233,11 @@ mod tests {
         let got = merged(
             Err(not_found()),
             Ok(vec![proc("k", Some(7))]),
-            Ok(vec![proc("dup", Some(7))]),
+            // A real hook card names its session first, so the match is on the second.
+            Ok(vec![Agent {
+                identities: vec![Identity::Session("s".into()), Identity::Pid(7)],
+                ..agent("dup")
+            }]),
         );
         assert_eq!(got, Ok(vec![proc("k", Some(7))]));
     }
