@@ -33,6 +33,10 @@ pub enum UserEvent {
     ClosePanel,
     /// The tray icon moved or changed width while the panel hangs from it
     AnchorMoved,
+    /// The status item opened its expanded interface session (macOS 27+)
+    ExpandedBegan,
+    /// The status item ended it
+    ExpandedEnded,
 }
 
 fn build_runtime() -> tokio::runtime::Runtime {

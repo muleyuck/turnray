@@ -287,6 +287,8 @@ pub struct Panel {
     _target: Retained<Target>,
     /// The tray button the panel hangs from, while it is open.
     anchor: Option<Retained<NSStatusBarButton>>,
+    /// macOS 27+: the status item's session keeps the icon pressed while the panel is open.
+    system_highlight: bool,
     watchers: Option<Watchers>,
 }
 
@@ -801,6 +803,7 @@ impl Panel {
             showing_settings: false,
             _target: target,
             anchor: None,
+            system_highlight: false,
             watchers: None,
         }
     }
@@ -996,8 +999,16 @@ impl Panel {
         }
     }
 
+    pub fn set_system_highlight(&mut self, on: bool) {
+        self.system_highlight = on;
+    }
+
     /// tray-icon unhighlights the button on every mouse up; while open it stays pressed.
+    /// macOS 27 no longer draws this, hence the session.
     pub fn keep_highlight(&self) {
+        if self.system_highlight {
+            return;
+        }
         if let Some(button) = &self.anchor {
             button.highlight(true);
         }
@@ -1007,7 +1018,9 @@ impl Panel {
         // Undone even if the window is already gone, so nothing outlives the panel.
         self.unwatch();
         if let Some(button) = self.anchor.take() {
-            button.highlight(false);
+            if !self.system_highlight {
+                button.highlight(false);
+            }
         }
         self.showing_settings = false;
         self.apply_view();
@@ -1029,6 +1042,8 @@ impl Panel {
         let on_click = send_close.clone();
         if let Some(m) = NSEvent::addGlobalMonitorForEventsMatchingMask_handler(
             NSEventMask::LeftMouseDown | NSEventMask::RightMouseDown,
+            // On macOS 27 this includes a click on the icon itself, which does not end the
+            // session: closing the panel cancels it.
             &RcBlock::new(move |_: NonNull<NSEvent>| on_click()),
         ) {
             monitors.push(m);
