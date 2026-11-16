@@ -1,4 +1,4 @@
-use crate::model::{Agent, Status};
+use crate::model::{Agent, Identity, Status};
 use serde::{Deserialize, Serialize};
 
 /// What Claude Code sends a hook on stdin. Keys not listed here are ignored.
@@ -210,7 +210,9 @@ impl SessionRecord {
             name: self.agent.as_str().to_string(),
             workspace: workspace.to_string(),
             title: self.title.clone().unwrap_or_default(),
-            session_id: Some(session_id.to_string()),
+            identities: std::iter::once(Identity::Session(session_id.to_string()))
+                .chain(self.pid.map(Identity::Pid))
+                .collect(),
         }
     }
 }
@@ -515,6 +517,23 @@ mod tests {
             assert_eq!(a.status, Status::Working);
             assert_eq!(a.title, "fix the bug");
         }
+    }
+
+    #[test]
+    fn to_agent_names_the_session_and_the_records_pid() {
+        assert_eq!(
+            record("/x/y").to_agent("s").identities,
+            [Identity::Session("s".into()), Identity::Pid(4242)]
+        );
+    }
+
+    #[test]
+    fn to_agent_names_only_the_session_when_the_record_has_no_pid() {
+        let r = SessionRecord {
+            pid: None,
+            ..record("/x/y")
+        };
+        assert_eq!(r.to_agent("s").identities, [Identity::Session("s".into())]);
     }
 
     #[test]

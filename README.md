@@ -11,9 +11,9 @@
   <img src="docs/images/overview.png" alt="turnray in the menu bar with its panel open" width="320">
 </p>
 
-turnray watches the AI agents running under herdr, and Claude Code and Codex sessions anywhere
-through a plugin, and tells you, from the menu bar, which ones are waiting for you —
-without changing your terminal layout. The name is *turn*
+turnray watches the AI agents running under herdr or kitty, and Claude Code and Codex
+sessions anywhere through a plugin, and tells you, from the menu bar, which ones are
+waiting for you — without changing your terminal layout. The name is *turn*
 (your turn) + *tray*.
 
 ## Features
@@ -24,6 +24,8 @@ without changing your terminal layout. The name is *turn*
   status
 - **Your priority** — reorder the statuses to decide which one the menu bar puts first
 - **Live** — updates every second, and warns you when herdr can't be reached
+- **kitty too** — Claude Code and Codex in kitty windows show up without a plugin
+  ([kitty](#kitty))
 - **Works without herdr** — a plugin reports Claude Code or Codex sessions in any
   terminal ([Claude Code without herdr](#claude-code-without-herdr),
   [Codex without herdr](#codex-without-herdr))
@@ -31,9 +33,9 @@ without changing your terminal layout. The name is *turn*
 ## Requirements
 
 - macOS
-- herdr, running ([how turnray finds it](#how-turnray-finds-herdr)), or the
-  [Claude Code plugin](#claude-code-plugin) or [Codex plugin](#codex-plugin) for
-  sessions outside herdr
+- herdr, running ([how turnray finds it](#how-turnray-finds-herdr)), kitty 0.50.0 or later
+  with [remote control on](#kitty), or the [Claude Code plugin](#claude-code-plugin) or
+  [Codex plugin](#codex-plugin) for sessions outside herdr
 
 ## Install
 
@@ -166,6 +168,40 @@ in order:
 If none has it, turnray falls back to `command -v herdr` in a zsh login shell (`zsh -l`:
 `.zprofile` is read, `.zshrc` is not). If the menu bar shows the warning triangle, check
 that `herdr` is in one of those places.
+
+## kitty
+
+turnray reads the agent status that Claude Code and Codex report to kitty (kitty 0.50.0 or
+later). It needs no plugin. Turn on remote control and shell integration in `kitty.conf`,
+then restart kitty:
+
+```conf
+allow_remote_control socket-only
+listen_on unix:kitty-{kitty_pid}
+shell_integration enabled
+```
+
+Remote control lets any program of the same user drive kitty completely through its
+socket. Turn it on only if you accept that.
+
+Every second, turnray runs `kitten @ ls` once for each `kitty*` socket directly in your
+temporary directory (`$TMPDIR`, else `getconf DARWIN_USER_TEMP_DIR`). It looks for `kitten`
+in these places, in order, and does not fall back to a login shell:
+
+1. `/Applications/kitty.app/Contents/MacOS/kitten`
+2. `~/Applications/kitty.app/Contents/MacOS/kitten`
+3. `/opt/homebrew/bin/kitten`
+4. `/usr/local/bin/kitten`
+
+- Only Claude Code and Codex are shown, the agents that send kitty an OSC 7501 record
+- A card's title is the record's title when it has one, else the kitty window's title
+- A record with `error` is shown as **done**
+- **done** goes away when you focus the kitty window
+- If you also installed the [Claude Code](#claude-code-plugin) or [Codex](#codex-plugin)
+  plugin, a session that both report is shown once, with kitty's card, matched by the
+  agent's process id
+- kitty is never an error: with no `kitten`, no socket or no answer, turnray shows
+  nothing from kitty
 
 ## Claude Code without herdr
 

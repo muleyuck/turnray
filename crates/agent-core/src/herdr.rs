@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use serde::Deserialize;
 
-use crate::model::{Agent, Status};
+use crate::model::{Agent, Identity, Status};
 
 /// herdr's `AgentStatus` is exactly the app's five.
 pub const EMITTED: &[Status] = &Status::ALL;
@@ -107,10 +107,13 @@ pub fn parse_agents(json: &str, labels: &HashMap<String, String>) -> Result<Vec<
                 .cloned()
                 .unwrap_or_else(|| a.workspace_id.clone()),
             title: first_non_empty([&a.terminal_title_stripped, &a.terminal_title]),
-            session_id: a
+            identities: a
                 .agent_session
                 .and_then(|s| s.value)
-                .filter(|v| !v.is_empty()),
+                .filter(|v| !v.is_empty())
+                .map(Identity::Session)
+                .into_iter()
+                .collect(),
         })
         .collect())
 }
@@ -144,21 +147,21 @@ mod tests {
                     name: "claude".into(),
                     workspace: "react-vue-comparison".into(),
                     title: "Vue学習ロードマップ作成".into(),
-                    session_id: None,
+                    identities: vec![],
                 },
                 Agent {
                     status: Status::Working,
                     name: "claude".into(),
                     workspace: "turnray".into(),
                     title: "Herdr agents menubar design".into(),
-                    session_id: None,
+                    identities: vec![],
                 },
             ]
         );
     }
 
     #[test]
-    fn the_agent_session_value_becomes_the_session_id_unless_empty_or_missing() {
+    fn the_agent_session_value_becomes_a_session_identity_unless_empty_or_missing() {
         let json = r#"{"result":{"agents":[
             {"agent":"claude","agent_status":"idle","pane_id":"a","workspace_id":"w",
              "agent_session":{"agent":"claude","kind":"id","source":"herdr:claude","value":"uuid-1"}},
@@ -168,9 +171,12 @@ mod tests {
         let ids: Vec<_> = parse_agents(json, &HashMap::new())
             .unwrap()
             .into_iter()
-            .map(|a| a.session_id)
+            .map(|a| a.identities)
             .collect();
-        assert_eq!(ids, vec![Some("uuid-1".to_string()), None, None]);
+        assert_eq!(
+            ids,
+            vec![vec![Identity::Session("uuid-1".into())], vec![], vec![]]
+        );
     }
 
     #[test]

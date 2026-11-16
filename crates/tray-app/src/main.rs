@@ -2,6 +2,7 @@ mod backend;
 mod herdr;
 mod hooks;
 mod images;
+mod kitty;
 mod login;
 mod menu;
 mod merged;
@@ -83,6 +84,7 @@ fn main() {
 
     let source: Arc<dyn DataSource> = Arc::new(merged::MergedSource::new(
         Box::new(herdr::HerdrSource::default()),
+        Box::new(kitty::KittySource::new()),
         Box::new(hooks::HookSource::new()),
     ));
     let mut app = App::new(store::load(), source.emitted_statuses());

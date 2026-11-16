@@ -261,14 +261,14 @@ mod tests {
                     name: "claude".into(),
                     workspace: "turnray".into(),
                     title: "Fix & ship".into(),
-                    session_id: None,
+                    identities: vec![],
                 },
                 Agent {
                     status: Status::Working,
                     name: "codex".into(),
                     workspace: "scoptray".into(),
                     title: "Refactor".into(),
-                    session_id: None,
+                    identities: vec![],
                 },
             ]
         );

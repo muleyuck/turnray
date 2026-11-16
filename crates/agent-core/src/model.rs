@@ -43,9 +43,18 @@ pub struct Agent {
     pub name: String,
     pub workspace: String,
     pub title: String,
-    /// The agent's own session id, when its source knows it. Only used to tell that two
-    /// sources report the same session; never displayed.
-    pub session_id: Option<String>,
+    /// What the source knows that names this agent. Only used to tell that two sources
+    /// report the same agent; never displayed.
+    pub identities: Vec<Identity>,
+}
+
+/// One thing that names an agent across sources: two cards that share any is one agent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Identity {
+    /// The agent's own session id.
+    Session(String),
+    /// The agent process's pid.
+    Pid(u32),
 }
 
 #[cfg(test)]

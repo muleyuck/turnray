@@ -276,7 +276,7 @@ mod tests {
             name: name.into(),
             workspace: workspace.into(),
             title: title.into(),
-            session_id: None,
+            identities: vec![],
         }
     }
 
