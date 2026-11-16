@@ -1,8 +1,10 @@
 use agent_core::{Agent, Settings, SourceError, Status, Style};
+use objc2::rc::Retained;
 use objc2::MainThreadMarker;
 use objc2_foundation::NSSize;
 use tray_icon::TrayIcon;
 
+use crate::expanded;
 use crate::panel::Panel;
 use crate::ui::{self, Dir, DisplayState, PanelContent, SettingsView, TrayImage, TrayView};
 
@@ -42,6 +44,9 @@ pub struct App {
     /// What the panel's list and settings view were last given.
     last_content: Option<PanelContent>,
     last_settings: Option<SettingsView>,
+    expanded_delegate: Option<Retained<expanded::Delegate>>,
+    /// macOS 27+: the status item, not the tray click, opens and closes the panel.
+    expanded: bool,
 }
 
 impl App {
@@ -56,14 +61,22 @@ impl App {
             panel: None,
             last_content: None,
             last_settings: None,
+            expanded_delegate: None,
+            expanded: false,
         }
     }
 
     /// The tray and the panel can only be built once the event loop runs, so they arrive
     /// after `new`.
-    pub fn attach(&mut self, tray: TrayIcon, panel: Panel) {
+    pub fn attach(
+        &mut self,
+        tray: TrayIcon,
+        panel: Panel,
+        expanded_delegate: Retained<expanded::Delegate>,
+    ) {
         self.tray = Some(tray);
         self.panel = Some(panel);
+        self.expanded_delegate = Some(expanded_delegate);
         self.refresh();
     }
 
@@ -115,6 +128,17 @@ impl App {
         // Showing the item rebuilds it from the stored icon, at tray-icon's size again.
         if image_changed || shown {
             fit_to_menu_bar(tray);
+        }
+        // Showing the item builds a new one, which has no delegate yet.
+        if shown {
+            if let (Some(item), Some(delegate)) =
+                (tray.ns_status_item(), self.expanded_delegate.as_ref())
+            {
+                self.expanded = expanded::adopt(&item, delegate);
+                if let Some(panel) = self.panel.as_mut() {
+                    panel.set_system_highlight(self.expanded);
+                }
+            }
         }
         self.last_view = Some(TrayView {
             // Keep the last image actually drawn, so a later visible view compares to it.
@@ -189,6 +213,9 @@ impl App {
 
     /// Opens or closes the panel on the press; the release only keeps the icon pressed.
     pub fn on_tray_click(&mut self, pressed: bool) {
+        if self.expanded {
+            return;
+        }
         let (Some(tray), Some(panel)) = (self.tray.as_ref(), self.panel.as_mut()) else {
             return;
         };
@@ -218,7 +245,37 @@ impl App {
         }
     }
 
+    /// The status item's session began.
+    pub fn open_panel(&mut self) {
+        let (Some(tray), Some(panel)) = (self.tray.as_ref(), self.panel.as_mut()) else {
+            return;
+        };
+        let Some(item) = tray.ns_status_item() else {
+            return;
+        };
+        if !panel.is_shown() {
+            panel.show(&item);
+        }
+        // Nothing to hang from: end the session, or the icon would stay pressed with no
+        // panel to close it from.
+        if !panel.is_shown() {
+            expanded::cancel(&item);
+        }
+    }
+
+    /// Closed from turnray's side: Esc, a click elsewhere or on the icon, the panel losing
+    /// the keyboard, Quit. The session is ended too, or the icon would stay pressed.
     pub fn close_panel(&mut self) {
+        if self.expanded {
+            if let Some(item) = self.tray.as_ref().and_then(|t| t.ns_status_item()) {
+                expanded::cancel(&item);
+            }
+        }
+        self.close_panel_now();
+    }
+
+    /// The status item's session ended.
+    pub fn close_panel_now(&mut self) {
         if let Some(panel) = self.panel.as_mut() {
             panel.close();
         }

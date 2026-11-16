@@ -46,6 +46,9 @@ A Cargo workspace with two crates:
     on each (`KittySource`)
   - `hooks.rs` runs `turnray hook claude` (writes a session file) and reads those files back
     as a data source, dropping stale sessions; `merged.rs` merges herdr's, kitty's and that source's, dropping a repeated agent
+  - `expanded.rs` is the status item's expanded interface delegate (macOS 27+): the item,
+    not tray-icon's click, opens the panel and keeps the icon drawn pressed; turnray
+    cancels the session when it closes the panel
   - `login.rs` turns launch at login on and off through `SMAppService` (macOS 13+, and
     only from the `.app`); macOS keeps that setting, not `store.rs`
 

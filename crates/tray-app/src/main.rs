@@ -1,4 +1,5 @@
 mod backend;
+mod expanded;
 mod herdr;
 mod hooks;
 mod images;
@@ -104,7 +105,11 @@ fn main() {
                     .expect("tray build");
                 tray.set_visible(false).expect("tray visibility");
                 let mtm = MainThreadMarker::new().expect("event loop runs on the main thread");
-                app.attach(tray, Panel::new(panel_proxy.clone(), mtm));
+                app.attach(
+                    tray,
+                    Panel::new(panel_proxy.clone(), mtm),
+                    expanded::Delegate::new(panel_proxy.clone(), mtm),
+                );
             }
             Event::UserEvent(UserEvent::Update(res)) => app.on_update(res),
             Event::UserEvent(UserEvent::TrayClick { pressed }) => app.on_tray_click(pressed),
@@ -118,6 +123,8 @@ fn main() {
             }) => app.move_status(status, dir, keyboard),
             Event::UserEvent(UserEvent::ClosePanel) => app.close_panel(),
             Event::UserEvent(UserEvent::AnchorMoved) => app.follow_anchor(),
+            Event::UserEvent(UserEvent::ExpandedBegan) => app.open_panel(),
+            Event::UserEvent(UserEvent::ExpandedEnded) => app.close_panel_now(),
             Event::UserEvent(UserEvent::Quit) => {
                 app.close_panel();
                 *control_flow = ControlFlow::Exit;
