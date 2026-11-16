@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.4.0](https://github.com/muleyuck/turnray/compare/v0.3.0...v0.4.0) (2026-11-16)
+
+
+### Features
+
+* show Claude Code and Codex agents running in kitty ([#32](https://github.com/muleyuck/turnray/issues/32)) ([639e50d](https://github.com/muleyuck/turnray/commit/639e50d5126bb78fc2130764928f077e18a1e30f))
+
+
+### Bug Fixes
+
+* keep the tray icon pressed while the panel is open on macOS 27 ([#34](https://github.com/muleyuck/turnray/issues/34)) ([c2ae90d](https://github.com/muleyuck/turnray/commit/c2ae90d9d651adae658eb233cf5b6eb99fd60102))
+
 ## [0.3.0](https://github.com/muleyuck/turnray/compare/v0.2.0...v0.3.0) (2026-11-01)
 
 
