@@ -9,6 +9,7 @@ mod menu;
 mod merged;
 mod panel;
 mod process;
+mod rex;
 mod store;
 mod ui;
 
