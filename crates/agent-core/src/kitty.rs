@@ -79,7 +79,7 @@ impl Record {
     }
 }
 
-fn hook_agent(app: &str) -> Option<HookAgent> {
+pub(crate) fn hook_agent(app: &str) -> Option<HookAgent> {
     match app {
         "claude-code" => Some(HookAgent::Claude),
         "codex" => Some(HookAgent::Codex),
@@ -87,7 +87,7 @@ fn hook_agent(app: &str) -> Option<HookAgent> {
     }
 }
 
-fn last_part(path: &str) -> &str {
+pub(crate) fn last_part(path: &str) -> &str {
     path.split('/')
         .rfind(|part| !part.is_empty())
         .unwrap_or(path)
