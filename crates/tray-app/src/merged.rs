@@ -1,31 +1,30 @@
-//! The app's data source: herdr's agents, kitty's and the agents' hook sessions, side by side.
+//! The app's data source: herdr's agents, kitty's, Rex's and the agents' hook sessions, side
+//! by side.
 
 use agent_core::{Agent, DataSource, SourceError, Status};
 
 pub struct MergedSource {
     herdr: Box<dyn DataSource>,
-    kitty: Box<dyn DataSource>,
-    hooks: Box<dyn DataSource>,
+    /// After herdr, in the order their cards are shown (kitty, Rex, the hook sessions).
+    others: Vec<Box<dyn DataSource>>,
     emitted: &'static [Status],
 }
 
 impl MergedSource {
-    pub fn new(
-        herdr: Box<dyn DataSource>,
-        kitty: Box<dyn DataSource>,
-        hooks: Box<dyn DataSource>,
-    ) -> MergedSource {
-        let sources = [&herdr, &kitty, &hooks];
+    pub fn new(herdr: Box<dyn DataSource>, others: Vec<Box<dyn DataSource>>) -> MergedSource {
         let union: Vec<Status> = Status::ALL
             .into_iter()
-            .filter(|s| sources.iter().any(|src| src.emitted_statuses().contains(s)))
+            .filter(|s| {
+                std::iter::once(&herdr)
+                    .chain(&others)
+                    .any(|src| src.emitted_statuses().contains(s))
+            })
             .collect();
         // One source per process, built once at startup, so the leak is bounded.
         let emitted = Box::leak(union.into_boxed_slice());
         MergedSource {
             herdr,
-            kitty,
-            hooks,
+            others,
             emitted,
         }
     }
@@ -47,20 +46,23 @@ fn without_seen(later: Vec<Agent>, earlier: &[Agent]) -> Vec<Agent> {
 impl DataSource for MergedSource {
     fn fetch(&self) -> Result<Vec<Agent>, SourceError> {
         let herdr = self.herdr.fetch();
-        // Kitty and hooks never hide herdr's agents: a failing one adds nothing.
-        let kitty = self.kitty.fetch().unwrap_or_default();
-        let hooks = self.hooks.fetch().unwrap_or_default();
+        // The others never hide herdr's agents: a failing one adds nothing.
+        let others: Vec<Vec<Agent>> = self
+            .others
+            .iter()
+            .map(|src| src.fetch().unwrap_or_default())
+            .collect();
         // The same agent can arrive from several sources (Codex's hook also fires inside
-        // herdr or kitty); the earlier source's card wins.
+        // herdr, kitty or Rex); the earlier source's card wins.
         let (mut agents, herdr_error) = match herdr {
             Ok(agents) => (agents, None),
             Err(e @ SourceError::NotFound(_)) => (Vec::new(), Some(e)),
             Err(e) => return Err(e),
         };
-        let kitty = without_seen(kitty, &agents);
-        agents.extend(kitty);
-        let hooks = without_seen(hooks, &agents);
-        agents.extend(hooks);
+        for later in others {
+            let later = without_seen(later, &agents);
+            agents.extend(later);
+        }
         match herdr_error {
             Some(e) if agents.is_empty() => Err(e),
             _ => Ok(agents),
@@ -151,7 +153,7 @@ mod tests {
                 emitted: &[],
             })
         };
-        MergedSource::new(fake(herdr), fake(kitty), fake(hooks)).fetch()
+        MergedSource::new(fake(herdr), vec![fake(kitty), fake(hooks)]).fetch()
     }
 
     fn not_found() -> SourceError {
@@ -196,7 +198,7 @@ mod tests {
                 emitted,
             })
         };
-        MergedSource::new(fake(herdr), fake(kitty), fake(hooks)).emitted_statuses()
+        MergedSource::new(fake(herdr), vec![fake(kitty), fake(hooks)]).emitted_statuses()
     }
 
     #[test]
@@ -301,5 +303,53 @@ mod tests {
         let failed = SourceError::Failed("boom".into());
         let got = merged(Err(failed.clone()), Ok(vec![agent("k")]), Ok(vec![]));
         assert_eq!(got, Err(failed));
+    }
+
+    fn merged_with_rex(
+        kitty: Result<Vec<Agent>, SourceError>,
+        rex: Result<Vec<Agent>, SourceError>,
+        hooks: Result<Vec<Agent>, SourceError>,
+    ) -> Result<Vec<Agent>, SourceError> {
+        let fake = |result| {
+            Box::new(Fake {
+                result,
+                emitted: &[],
+            }) as Box<dyn DataSource>
+        };
+        MergedSource::new(
+            fake(Err(not_found())),
+            vec![fake(kitty), fake(rex), fake(hooks)],
+        )
+        .fetch()
+    }
+
+    #[test]
+    fn rex_cards_come_after_kittys_and_before_the_hook_sessions() {
+        let got = merged_with_rex(
+            Ok(vec![agent("k")]),
+            Ok(vec![agent("r")]),
+            Ok(vec![agent("c")]),
+        );
+        assert_eq!(got, Ok(vec![agent("k"), agent("r"), agent("c")]));
+    }
+
+    #[test]
+    fn a_hook_session_with_rexs_pid_is_dropped_and_rex_yields_to_kitty() {
+        let got = merged_with_rex(
+            Ok(vec![proc("k", Some(1))]),
+            Ok(vec![proc("dup-k", Some(1)), proc("r", Some(2))]),
+            Ok(vec![proc("dup-r", Some(2))]),
+        );
+        assert_eq!(got, Ok(vec![proc("k", Some(1)), proc("r", Some(2))]));
+    }
+
+    #[test]
+    fn a_failing_rex_adds_nothing_and_the_others_still_show() {
+        let got = merged_with_rex(
+            Ok(vec![agent("k")]),
+            Err(SourceError::Failed("boom".into())),
+            Ok(vec![agent("c")]),
+        );
+        assert_eq!(got, Ok(vec![agent("k"), agent("c")]));
     }
 }
