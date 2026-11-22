@@ -26,7 +26,8 @@ A Cargo workspace with two crates:
 
 - `crates/agent-core` — logic with no GUI dependency: `Status` and `Agent` (`model.rs`),
   priority order (`priority.rs`), settings parsing (`settings.rs`), herdr's JSON
-  (`herdr.rs`), kitty's `kitten @ ls` JSON (`kitty.rs`), the answer of turnray's Lua
+  (`herdr.rs`), what OSC 7501 records mean, for kitty and Rex alike (`program_status.rs`),
+  kitty's `kitten @ ls` JSON (`kitty.rs`), the answer of turnray's Lua
   script for Rex (`rex.rs`), Claude Code hook events and session records (`hook.rs`) and the
   `DataSource` trait (`source.rs`)
 - `crates/tray-app` — the macOS app:

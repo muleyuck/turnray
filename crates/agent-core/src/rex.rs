@@ -6,11 +6,8 @@ use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 
 use crate::hook::HookAgent;
-use crate::kitty::{hook_agent, last_part};
 use crate::model::{Agent, Identity, Status};
-
-/// Rex reads the same records as kitty, so it maps them to the same statuses.
-pub const EMITTED: &[Status] = crate::kitty::EMITTED;
+use crate::program_status::{agent, last_part, status};
 
 /// A list that is `null`, missing or `{}` reads as empty: Rex's Lua writes an empty table
 /// as `{}`.
@@ -92,10 +89,10 @@ fn block_agents(block: &Block, out: &mut Vec<Agent>) {
     let processes = &block.process;
     let mut groups: Vec<(HookAgent, Vec<(&Record, Status)>)> = Vec::new();
     for record in &block.program_status.records {
-        let Some(agent) = record.effective_app.as_deref().and_then(hook_agent) else {
+        let Some(agent) = record.effective_app.as_deref().and_then(agent) else {
             continue;
         };
-        let Some(status) = record.state.as_deref().and_then(crate::kitty::status) else {
+        let Some(status) = record.state.as_deref().and_then(status) else {
             continue;
         };
         match groups.iter_mut().find(|(a, _)| *a == agent) {

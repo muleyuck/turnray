@@ -6,7 +6,7 @@ use std::process::Command;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use agent_core::{rex, Agent, DataSource, SourceError, Status};
+use agent_core::{program_status, rex, Agent, DataSource, SourceError, Status};
 
 use crate::process::output_with_timeout;
 
@@ -126,7 +126,7 @@ impl DataSource for RexSource {
     }
 
     fn emitted_statuses(&self) -> &'static [Status] {
-        rex::EMITTED
+        program_status::EMITTED
     }
 }
 

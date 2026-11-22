@@ -3,6 +3,7 @@ pub mod hook;
 pub mod kitty;
 pub mod model;
 pub mod priority;
+pub mod program_status;
 pub mod rex;
 pub mod settings;
 pub mod source;
