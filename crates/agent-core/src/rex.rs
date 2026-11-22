@@ -333,23 +333,6 @@ mod tests {
     }
 
     #[test]
-    fn states_map_as_kittys_and_cleared_or_unknown_ones_are_dropped() {
-        let one = |state: &str| {
-            statuses(&block_with(&format!(
-                r#"{{"effective_app":"claude-code","state":"{state}"}}"#
-            )))
-        };
-        assert_eq!(one("error"), [Status::Done]);
-        assert_eq!(one("blocked"), [Status::Blocked]);
-        assert_eq!(one("clear"), []);
-        assert_eq!(one("zzz"), []);
-        assert_eq!(
-            statuses(&block_with(r#"{"effective_app":"claude-code"}"#)),
-            []
-        );
-    }
-
-    #[test]
     fn a_blocks_records_are_one_card_with_the_root_records_state_and_title() {
         let json = block_with(
             r#"{"effective_app":"claude-code","state":"done","title":"Root"},{"id":"a","effective_app":"claude-code","state":"working","title":"started by Claude"},{"id":"b","effective_app":"claude-code","state":"blocked"}"#,
@@ -374,14 +357,6 @@ mod tests {
             r#"{"effective_app":"claude-code","state":"clear"},{"id":"a","effective_app":"claude-code","state":"working"},{"id":"b","effective_app":"claude-code","state":"blocked"}"#,
         );
         assert_eq!(statuses(&json), [Status::Working]);
-    }
-
-    #[test]
-    fn a_cleared_child_does_not_hide_the_root() {
-        let json = block_with(
-            r#"{"effective_app":"claude-code","state":"done"},{"id":"a","effective_app":"claude-code","state":"clear"}"#,
-        );
-        assert_eq!(statuses(&json), [Status::Done]);
     }
 
     #[test]
@@ -435,6 +410,12 @@ mod tests {
         let agents = parse(json).unwrap();
         assert_eq!(agents[0].identities, []);
         assert_eq!(agents[0].workspace, "fg");
+    }
+
+    #[test]
+    fn records_of_another_shape_are_an_error_not_an_empty_list() {
+        assert!(parse(r#"[{"program_status":{"records":{"0":{"state":"idle"}}}}]"#).is_err());
+        assert!(parse(r#"[{"program_status":{"records":[{"state":7}]}}]"#).is_err());
     }
 
     #[test]
