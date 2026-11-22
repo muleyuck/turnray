@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/muleyuck/turnray/compare/v0.4.0...v0.5.0) (2026-11-22)
+
+
+### Features
+
+* show Claude Code and Codex agents running in Rex ([#38](https://github.com/muleyuck/turnray/issues/38)) ([c72c7e3](https://github.com/muleyuck/turnray/commit/c72c7e352e004c42f92a9126fa7d65fdd0541be2))
+
 ## [0.4.0](https://github.com/muleyuck/turnray/compare/v0.3.0...v0.4.0) (2026-11-16)
 
 
