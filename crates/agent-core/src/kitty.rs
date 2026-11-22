@@ -4,22 +4,8 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Deserializer};
 
-use crate::hook::HookAgent;
-use crate::model::{Agent, Identity, Status};
-
-/// The statuses kitty's records map to: `error` shows as Done, so Unknown never appears.
-pub const EMITTED: &[Status] = &[Status::Blocked, Status::Done, Status::Idle, Status::Working];
-
-/// An OSC 7501 `state` as one of the app's statuses; `None` for `clear` and anything unknown.
-pub fn status(state: &str) -> Option<Status> {
-    match state {
-        "idle" => Some(Status::Idle),
-        "working" => Some(Status::Working),
-        "blocked" => Some(Status::Blocked),
-        "done" | "error" => Some(Status::Done),
-        _ => None,
-    }
-}
+use crate::model::{Agent, Identity};
+use crate::program_status::{agent, last_part, status};
 
 /// A list that is `null` reads as empty, so one odd window cannot fail the whole answer.
 fn list<'de, D: Deserializer<'de>, T: Deserialize<'de>>(d: D) -> Result<Vec<T>, D::Error> {
@@ -79,20 +65,6 @@ impl Record {
     }
 }
 
-fn hook_agent(app: &str) -> Option<HookAgent> {
-    match app {
-        "claude-code" => Some(HookAgent::Claude),
-        "codex" => Some(HookAgent::Codex),
-        _ => None,
-    }
-}
-
-fn last_part(path: &str) -> &str {
-    path.split('/')
-        .rfind(|part| !part.is_empty())
-        .unwrap_or(path)
-}
-
 /// The record's own `app`, else the nearest ancestor's (`a/b/c` -> `a/b`, `a`, the root).
 fn effective_app<'a>(record: &'a Record, by_id: &HashMap<&str, &'a Record>) -> Option<&'a str> {
     if let Some(app) = record.own_app() {
@@ -111,7 +83,7 @@ fn effective_app<'a>(record: &'a Record, by_id: &HashMap<&str, &'a Record>) -> O
 fn window_agents(window: &Window, out: &mut Vec<Agent>) {
     let by_id: HashMap<&str, &Record> = window.program_status.iter().map(|r| (r.id(), r)).collect();
     for record in &window.program_status {
-        let Some(agent) = effective_app(record, &by_id).and_then(hook_agent) else {
+        let Some(agent) = effective_app(record, &by_id).and_then(agent) else {
             continue;
         };
         let Some(status) = record.state.as_deref().and_then(status) else {
@@ -164,6 +136,7 @@ pub fn parse_ls(json: &str) -> Result<Vec<Agent>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::Status;
 
     const LS: &str = r#"
 [
@@ -334,22 +307,6 @@ mod tests {
                 agent(Status::Blocked, "codex", 50661, "emit.sh"),
             ]
         );
-    }
-
-    #[test]
-    fn states_map_to_statuses() {
-        assert_eq!(status("idle"), Some(Status::Idle));
-        assert_eq!(status("working"), Some(Status::Working));
-        assert_eq!(status("blocked"), Some(Status::Blocked));
-        assert_eq!(status("done"), Some(Status::Done));
-        assert_eq!(status("error"), Some(Status::Done));
-    }
-
-    #[test]
-    fn clear_unknown_and_empty_states_have_no_status() {
-        assert_eq!(status("clear"), None);
-        assert_eq!(status("sleeping"), None);
-        assert_eq!(status(""), None);
     }
 
     #[test]

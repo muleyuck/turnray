@@ -9,6 +9,7 @@ mod menu;
 mod merged;
 mod panel;
 mod process;
+mod rex;
 mod store;
 mod ui;
 
@@ -85,8 +86,11 @@ fn main() {
 
     let source: Arc<dyn DataSource> = Arc::new(merged::MergedSource::new(
         Box::new(herdr::HerdrSource::default()),
-        Box::new(kitty::KittySource::new()),
-        Box::new(hooks::HookSource::new()),
+        vec![
+            Box::new(kitty::KittySource::new()),
+            Box::new(rex::RexSource::new()),
+            Box::new(hooks::HookSource::new()),
+        ],
     ));
     let mut app = App::new(store::load(), source.emitted_statuses());
     spawn_backend(source, event_loop.create_proxy());

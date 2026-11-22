@@ -8,7 +8,7 @@ use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
-use agent_core::{kitty, Agent, DataSource, SourceError, Status};
+use agent_core::{kitty, program_status, Agent, DataSource, SourceError, Status};
 
 use crate::process::output_with_timeout;
 
@@ -138,7 +138,7 @@ impl DataSource for KittySource {
     }
 
     fn emitted_statuses(&self) -> &'static [Status] {
-        kitty::EMITTED
+        program_status::EMITTED
     }
 }
 

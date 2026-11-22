@@ -11,7 +11,7 @@
   <img src="docs/images/overview.png" alt="turnray in the menu bar with its panel open" width="320">
 </p>
 
-turnray watches the AI agents running under herdr or kitty, and Claude Code and Codex
+turnray watches the AI agents running under herdr, kitty or Rex, and Claude Code and Codex
 sessions anywhere through a plugin, and tells you, from the menu bar, which ones are
 waiting for you — without changing your terminal layout. The name is *turn*
 (your turn) + *tray*.
@@ -26,6 +26,7 @@ waiting for you — without changing your terminal layout. The name is *turn*
 - **Live** — updates every second, and warns you when herdr can't be reached
 - **kitty too** — Claude Code and Codex in kitty windows show up without a plugin
   ([kitty](#kitty))
+- **Rex too** — so do Claude Code and Codex in Rex's terminal blocks ([Rex](#rex))
 - **Works without herdr** — a plugin reports Claude Code or Codex sessions in any
   terminal ([Claude Code without herdr](#claude-code-without-herdr),
   [Codex without herdr](#codex-without-herdr))
@@ -34,8 +35,9 @@ waiting for you — without changing your terminal layout. The name is *turn*
 
 - macOS
 - herdr, running ([how turnray finds it](#how-turnray-finds-herdr)), kitty 0.50.0 or later
-  with [remote control on](#kitty), or the [Claude Code plugin](#claude-code-plugin) or
-  [Codex plugin](#codex-plugin) for sessions outside herdr
+  with [remote control on](#kitty), [Rex](#rex), or the
+  [Claude Code plugin](#claude-code-plugin) or [Codex plugin](#codex-plugin) for sessions
+  outside herdr
 
 ## Install
 
@@ -202,6 +204,32 @@ in these places, in order, and does not fall back to a login shell:
   agent's process id
 - kitty is never an error: with no `kitten`, no socket or no answer, turnray shows
   nothing from kitty
+
+## Rex
+
+turnray reads the agent status that Claude Code and Codex report to Rex's terminal
+blocks. It needs no plugin and no setting in Rex.
+
+Every second, turnray runs one Lua script through `rex --autostart=false do`, which asks
+every terminal block of every session for its records over a single connection. It never
+starts a Rex server: while none is running, turnray shows nothing from Rex. It looks for
+`rex` in these places, in order, and does not fall back to a login shell:
+
+1. `~/Library/Application Support/com.superlogical.rex/RexServer/Versions/Current/Rex Server.app/Contents/MacOS/rex`
+2. `/Applications/Rex Beta.app/Contents/Helpers/Rex Server.rex/Contents/MacOS/rex`
+
+- Only Claude Code and Codex records are shown, one card per agent in a terminal block:
+  the records Rex adds for each command the agent runs do not make cards of their own
+- A card shows the state of the agent's own record, not of the commands it runs, and its
+  title is that record's title when it has one, else the block's title
+- A record with `error` is shown as **done**
+- To read a session, the script attaches to it, so `rex client ls` can list turnray's
+  `rex` for the moment each poll takes
+- If you also installed the [Claude Code](#claude-code-plugin) or [Codex](#codex-plugin)
+  plugin, a session that both report is shown once, with Rex's card, matched by the
+  agent's process id
+- Rex is never an error: with no `rex`, no running server or no answer, turnray shows
+  nothing from Rex
 
 ## Claude Code without herdr
 

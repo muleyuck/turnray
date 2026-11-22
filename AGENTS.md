@@ -26,7 +26,9 @@ A Cargo workspace with two crates:
 
 - `crates/agent-core` — logic with no GUI dependency: `Status` and `Agent` (`model.rs`),
   priority order (`priority.rs`), settings parsing (`settings.rs`), herdr's JSON
-  (`herdr.rs`), kitty's `kitten @ ls` JSON (`kitty.rs`), Claude Code hook events and session records (`hook.rs`) and the
+  (`herdr.rs`), what OSC 7501 records mean, for kitty and Rex alike (`program_status.rs`),
+  kitty's `kitten @ ls` JSON (`kitty.rs`), the answer of turnray's Lua
+  script for Rex (`rex.rs`), Claude Code hook events and session records (`hook.rs`) and the
   `DataSource` trait (`source.rs`)
 - `crates/tray-app` — the macOS app:
   - `ui.rs` works out what to show (`TrayView`, `PanelContent`, `SettingsView`) from the
@@ -44,8 +46,10 @@ A Cargo workspace with two crates:
     `~/Library/Application Support/turnray/settings`
   - `kitty.rs` finds `kitten` and kitty's sockets in the temp directory and runs `kitten @ ls`
     on each (`KittySource`)
+  - `rex.rs` finds `rex` and runs `rex.lua` through `rex --autostart=false do` (`RexSource`);
+    without `--autostart=false` each poll would start a Rex server
   - `hooks.rs` runs `turnray hook claude` (writes a session file) and reads those files back
-    as a data source, dropping stale sessions; `merged.rs` merges herdr's, kitty's and that source's, dropping a repeated agent
+    as a data source, dropping stale sessions; `merged.rs` merges herdr's, kitty's, Rex's and that source's, dropping a repeated agent
   - `expanded.rs` is the status item's expanded interface delegate (macOS 27+): the item,
     not tray-icon's click, opens the panel and keeps the icon drawn pressed; turnray
     cancels the session when it closes the panel
@@ -60,7 +64,7 @@ A Cargo workspace with two crates:
   `.agents/plugins/marketplace.json` publishes it as `turnray@turnray`
 
 Data sources: the agent's own hook comes first. Add no per-terminal or per-multiplexer
-source besides `HerdrSource` and `KittySource`.
+source besides `HerdrSource`, `KittySource` and `RexSource`.
 
 The arguments and stdin of `turnray hook <agent>` are a compatibility promise with that
 agent's plugin, each with its own mark in `Contents/Resources` (set in the `Makefile`):
@@ -90,6 +94,8 @@ Changing `plugin-codex/` makes every user approve its hooks again in `/hooks`: r
   `herdr` shell script written to a temp dir
 - kitty is never called from tests: `tray-app/src/kitty.rs` runs against a fake `kitten`
   shell script
+- Rex is never called from tests: `tray-app/src/rex.rs` runs against a fake `rex` shell
+  script
 
 - Hook tests use a temp dir and a fake `.app`, never the real `claude` or `~/.claude`.
   Tests that run the real `ps` fail inside a sandbox, so run `make test` outside one
