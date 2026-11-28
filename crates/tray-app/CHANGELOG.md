@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.6.0](https://github.com/muleyuck/turnray/compare/v0.5.0...v0.6.0) (2026-11-28)
+
+
+### Features
+
+* show a done Rex agent you have seen as idle ([#42](https://github.com/muleyuck/turnray/issues/42)) ([65416d5](https://github.com/muleyuck/turnray/commit/65416d5dedcff498615d57a8f8d76a51b943f86d))
+
+
+### Bug Fixes
+
+* size the menu bar item to the 18pt image, not 22pt ([#44](https://github.com/muleyuck/turnray/issues/44)) ([354b9d9](https://github.com/muleyuck/turnray/commit/354b9d939dc87c386b126084148cf44b070b4ec4))
+
 ## [0.5.0](https://github.com/muleyuck/turnray/compare/v0.4.0...v0.5.0) (2026-11-22)
 
 
