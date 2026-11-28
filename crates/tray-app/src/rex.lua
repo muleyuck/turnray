@@ -17,7 +17,7 @@ for _, session in ipairs(list.sessions or {}) do
           end
           local status = call("program_status")
           if status and type(status.records) == "table" and next(status.records) then
-            table.insert(blocks, { program_status = status, process = call("process"), title = call("title") })
+            table.insert(blocks, { block_id = block.block_id, program_status = status, process = call("process"), title = call("title") })
           end
         end
       end

@@ -223,6 +223,10 @@ starts a Rex server: while none is running, turnray shows nothing from Rex. It l
 - A card shows the state of the agent's own record, not of the commands it runs, and its
   title is that record's title when it has one, else the block's title
 - A record with `error` is shown as **done**
+- A **done** agent you have already looked at in Rex is shown as **idle**, as herdr shows it:
+  turnray reads which statuses the Rex app has shown you from its preferences
+  (`com.superlogical.rex`, `Workspace.programActivitySeen`). Rex does not document that key,
+  so a Rex update can change it; then every finished agent stays **done**, as before
 - To read a session, the script attaches to it, so `rex client ls` can list turnray's
   `rex` for the moment each poll takes
 - If you also installed the [Claude Code](#claude-code-plugin) or [Codex](#codex-plugin)
