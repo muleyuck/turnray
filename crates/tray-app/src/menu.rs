@@ -28,6 +28,9 @@ fn fit_to_menu_bar(tray: &TrayIcon) {
             size.width * TRAY_ICON_HEIGHT / size.height,
             TRAY_ICON_HEIGHT,
         ));
+        // The item keeps the width it took for the larger image until the button is given
+        // an image again; invalidateIntrinsicContentSize does not shrink it.
+        button.setImage(Some(&image));
     }
 }
 
