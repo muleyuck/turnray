@@ -47,7 +47,9 @@ A Cargo workspace with two crates:
   - `kitty.rs` finds `kitten` and kitty's sockets in the temp directory and runs `kitten @ ls`
     on each (`KittySource`)
   - `rex.rs` finds `rex` and runs `rex.lua` through `rex --autostart=false do` (`RexSource`);
-    without `--autostart=false` each poll would start a Rex server
+    without `--autostart=false` each poll would start a Rex server; it also reads the Rex app's
+    undocumented `Workspace.programActivitySeen` preference, so a done agent the user has
+    seen shows as idle
   - `hooks.rs` runs `turnray hook claude` (writes a session file) and reads those files back
     as a data source, dropping stale sessions; `merged.rs` merges herdr's, kitty's, Rex's and that source's, dropping a repeated agent
   - `expanded.rs` is the status item's expanded interface delegate (macOS 27+): the item,

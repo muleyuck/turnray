@@ -52,8 +52,61 @@ impl From<String> for Failure {
     }
 }
 
+/// The Rex app's preferences domain, and the key under which it records which program
+/// statuses it has shown the user. Neither is documented: they were read from Rex
+/// 0.1.0-preview.35, whose server API has no read state.
+const REX_APP_DOMAIN: &str = "com.superlogical.rex";
+const SEEN_KEY: &str = "Workspace.programActivitySeen";
+
+/// What the Rex app has shown the user, from its `receipts`: one `{block, record, date}`
+/// per status seen, `date` being that status's `updated_at`. Unreadable means nothing seen.
+#[cfg(target_os = "macos")]
+fn seen_in_rex_app() -> rex::Seen {
+    use objc2::AllocAnyThread;
+    use objc2_foundation::{NSArray, NSDate, NSDictionary, NSString, NSUserDefaults};
+
+    let mut seen = rex::Seen::default();
+    let key = |k: &str| NSString::from_str(k);
+    let Some(defaults) =
+        NSUserDefaults::initWithSuiteName(NSUserDefaults::alloc(), Some(&key(REX_APP_DOMAIN)))
+    else {
+        return seen;
+    };
+    let Some(receipts) = defaults
+        .dictionaryForKey(&key(SEEN_KEY))
+        .and_then(|all| all.objectForKey(&key("receipts")))
+    else {
+        return seen;
+    };
+    let Some(receipts) = receipts.downcast_ref::<NSArray>() else {
+        return seen;
+    };
+    for receipt in receipts.iter() {
+        let Some(receipt) = receipt.downcast_ref::<NSDictionary>() else {
+            continue;
+        };
+        let field = |k: &str| receipt.objectForKey(&*key(k));
+        let text =
+            |k: &str| field(k).and_then(|o| o.downcast_ref::<NSString>().map(|s| s.to_string()));
+        let (Some(block), Some(date)) = (text("block"), field("date")) else {
+            continue;
+        };
+        let Some(date) = date.downcast_ref::<NSDate>() else {
+            continue;
+        };
+        let millis = (date.timeIntervalSince1970() * 1000.0).round() as i64;
+        seen.insert(&block, &text("record").unwrap_or_default(), millis);
+    }
+    seen
+}
+
+#[cfg(not(target_os = "macos"))]
+fn seen_in_rex_app() -> rex::Seen {
+    rex::Seen::default()
+}
+
 /// Runs the script once.
-fn ask(rex: &Path, timeout: Duration) -> Result<Vec<Agent>, Failure> {
+fn ask(rex: &Path, timeout: Duration, seen: &rex::Seen) -> Result<Vec<Agent>, Failure> {
     let mut cmd = Command::new(rex);
     // Without --autostart=false, rex starts a server when none is running.
     cmd.args(["--autostart=false", "do", "-e", SCRIPT, "--json"]);
@@ -76,7 +129,7 @@ fn ask(rex: &Path, timeout: Duration) -> Result<Vec<Agent>, Failure> {
             no_server: out.status.code() == Some(NO_SERVER_EXIT),
         });
     }
-    Ok(rex::parse(&String::from_utf8_lossy(&out.stdout))?)
+    Ok(rex::parse(&String::from_utf8_lossy(&out.stdout), seen)?)
 }
 
 #[derive(Default)]
@@ -90,13 +143,14 @@ impl RexSource {
         RexSource::default()
     }
 
-    /// `fetch` with the `rex` and the limit given, so a test can drive it.
-    fn fetch_from(&self, rex: &Path, timeout: Duration) -> Vec<Agent> {
+    /// `fetch` with the `rex`, the limit and what the user has seen given, so a test can
+    /// drive it.
+    fn fetch_from(&self, rex: &Path, timeout: Duration, seen: &rex::Seen) -> Vec<Agent> {
         if !rex.exists() {
             return Vec::new();
         }
         let mut last = self.last_error.lock().expect("rex error");
-        match ask(rex, timeout) {
+        match ask(rex, timeout, seen) {
             Ok(found) => {
                 *last = None;
                 found
@@ -122,7 +176,7 @@ impl DataSource for RexSource {
         let Some(rex) = candidates().into_iter().find(|p| p.exists()) else {
             return Ok(Vec::new());
         };
-        Ok(self.fetch_from(&rex, REX_TIMEOUT))
+        Ok(self.fetch_from(&rex, REX_TIMEOUT, &seen_in_rex_app()))
     }
 
     fn emitted_statuses(&self) -> &'static [Status] {
@@ -180,7 +234,7 @@ fi
     fn the_scripts_answer_becomes_agents() {
         let d = Dir::new("ok");
         let rex = fake_rex(&d.0, &format!("cat <<'EOF'\n{ANSWER}\nEOF"));
-        let agents = RexSource::new().fetch_from(&rex, LONG);
+        let agents = RexSource::new().fetch_from(&rex, LONG, &rex::Seen::default());
         assert_eq!(agents.len(), 1);
         assert_eq!(agents[0].workspace, "proj");
         assert_eq!(agents[0].identities, [agent_core::Identity::Pid(42)]);
@@ -193,23 +247,35 @@ fi
             &d.0,
             "echo 'Error: no Rex server is running at x.sock, and autostart is disabled' >&2; exit 4",
         );
-        assert!(RexSource::new().fetch_from(&rex, LONG).is_empty());
+        assert!(RexSource::new()
+            .fetch_from(&rex, LONG, &rex::Seen::default())
+            .is_empty());
     }
 
     #[test]
     fn only_rexs_no_server_exit_counts_as_no_server() {
         let d = Dir::new("exits");
         let down = fake_rex(&d.0, "echo 'Error: no Rex server is running' >&2; exit 4");
-        assert!(ask(&down, LONG).unwrap_err().no_server);
+        assert!(
+            ask(&down, LONG, &rex::Seen::default())
+                .unwrap_err()
+                .no_server
+        );
         let other = fake_rex(&d.0, "echo 'Error: boom' >&2; exit 1");
-        assert!(!ask(&other, LONG).unwrap_err().no_server);
+        assert!(
+            !ask(&other, LONG, &rex::Seen::default())
+                .unwrap_err()
+                .no_server
+        );
     }
 
     #[test]
     fn an_answer_that_is_not_json_adds_nothing() {
         let d = Dir::new("notjson");
         let rex = fake_rex(&d.0, "echo 'rex 9.9 usage'");
-        assert!(RexSource::new().fetch_from(&rex, LONG).is_empty());
+        assert!(RexSource::new()
+            .fetch_from(&rex, LONG, &rex::Seen::default())
+            .is_empty());
     }
 
     #[test]
@@ -217,7 +283,8 @@ fi
         let d = Dir::new("hang");
         let rex = fake_rex(&d.0, "sleep 5");
         let start = Instant::now();
-        let agents = RexSource::new().fetch_from(&rex, Duration::from_millis(300));
+        let agents =
+            RexSource::new().fetch_from(&rex, Duration::from_millis(300), &rex::Seen::default());
         assert!(agents.is_empty());
         assert!(
             start.elapsed() < Duration::from_secs(2),
@@ -230,7 +297,7 @@ fi
     fn a_missing_rex_yields_nothing() {
         let d = Dir::new("norex");
         assert!(RexSource::new()
-            .fetch_from(&d.0.join("no-such-rex"), LONG)
+            .fetch_from(&d.0.join("no-such-rex"), LONG, &rex::Seen::default())
             .is_empty());
     }
 }
