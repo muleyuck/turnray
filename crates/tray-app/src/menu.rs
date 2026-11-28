@@ -8,7 +8,7 @@ use crate::expanded;
 use crate::panel::Panel;
 use crate::ui::{self, Dir, DisplayState, PanelContent, SettingsView, TrayImage, TrayView};
 
-/// The images are 36px tall for 18pt at 2x. tray-icon 0.26 draws an image as many points tall
+/// The images are 36px tall for 18pt at 2x. tray-icon 0.27's `Icon::from_rgba` draws an image as many points tall
 /// as it has pixels, up to 22, which would show them larger and blurred.
 const TRAY_ICON_HEIGHT: f64 = 18.0;
 
